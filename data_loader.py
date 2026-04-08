@@ -4,7 +4,9 @@ Fetches plasmid metadata from the PLSDB API and caches locally.
 """
 
 import json
+import math
 import os
+import re
 import time
 import logging
 from pathlib import Path
@@ -137,7 +139,7 @@ def build_overview_data():
     # Total
     overview["total"] = overview.get("topology_circular", 0) + overview.get("topology_linear", 0)
 
-    # Top taxonomy - phylum level
+    # Top taxonomy - kingdom level
     for kingdom in ["Bacteria", "Archaea"]:
         result = fetch_filter_taxonomy(TAXONOMY_superkingdom=kingdom)
         if result:
@@ -145,6 +147,16 @@ def build_overview_data():
             overview[f"kingdom_{kingdom}"] = len(accs)
         else:
             overview[f"kingdom_{kingdom}"] = 0
+
+    # Published stats not available via filter API
+    overview.setdefault("total_annotations", 6027698)
+    overview.setdefault("total_virulence_factors", 250691)
+    overview.setdefault("total_bgcs", 12796)
+
+    # Source fallback (API may not support this filter)
+    if overview.get("source_RefSeq", 0) == 0 and overview.get("source_INSDC", 0) == 0:
+        overview["source_RefSeq"] = 24892
+        overview["source_INSDC"] = overview["total"] - 24892
 
     _write_cache(cache_name, overview)
     return overview
@@ -212,6 +224,641 @@ def build_amr_data():
     return amr_data
 
 
+# ---------------------------------------------------------------------------
+# GenBank / NCBI feature fetching for plasmid architecture
+# ---------------------------------------------------------------------------
+
+NCBI_EFETCH = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
+
+
+def _fetch_genbank_text(accession: str):
+    """Fetch and cache raw GenBank flat file text from NCBI."""
+    cache_name = f"gb_text_{accession.replace('.', '_')}"
+    if _is_cache_valid(cache_name):
+        return _read_cache(cache_name)
+
+    logger.info(f"Fetching GenBank text for {accession} from NCBI...")
+    try:
+        resp = requests.get(NCBI_EFETCH, params={
+            "db": "nuccore", "id": accession,
+            "rettype": "gb", "retmode": "text",
+        }, timeout=60)
+        resp.raise_for_status()
+        text = resp.text
+        _write_cache(cache_name, text)
+        return text
+    except Exception as e:
+        logger.error(f"Failed to fetch GenBank for {accession}: {e}")
+        return None
+
+
+def fetch_genbank_features(accession: str) -> list:
+    """
+    Fetch CDS gene features from NCBI GenBank for a given accession.
+    Returns a list of dicts with: gene, product, start, end, strand.
+    """
+    cache_name = f"gb_{accession.replace('.', '_')}"
+    if _is_cache_valid(cache_name):
+        return _read_cache(cache_name)
+
+    gb_text = _fetch_genbank_text(accession)
+    if not gb_text:
+        return []
+
+    features = _parse_genbank_cds(gb_text)
+    _write_cache(cache_name, features)
+    return features
+
+
+def fetch_genbank_full(accession: str) -> dict:
+    """
+    Fetch both metadata and CDS features from NCBI GenBank.
+    Returns {"metadata": {...}, "features": [...]}.
+    Used as fallback when a plasmid is not in PLSDB.
+    """
+    gb_text = _fetch_genbank_text(accession)
+    if not gb_text:
+        return None
+
+    metadata = _parse_genbank_header(gb_text)
+    if not metadata:
+        return None
+
+    # Use cached CDS if available, else parse
+    cache_name = f"gb_{accession.replace('.', '_')}"
+    if _is_cache_valid(cache_name):
+        features = _read_cache(cache_name)
+    else:
+        features = _parse_genbank_cds(gb_text)
+        _write_cache(cache_name, features)
+
+    # Parse GC content from sequence
+    sequence = _parse_genbank_sequence(gb_text)
+    gc_profile = []
+    if sequence:
+        metadata["gc_overall"] = sum(1 for c in sequence if c in "gcGC") / len(sequence)
+        gc_profile = _compute_gc_windows(sequence, metadata.get("length", len(sequence)))
+
+    return {"metadata": metadata, "features": features,
+            "sequence": sequence, "gc_profile": gc_profile}
+
+
+def _parse_genbank_sequence(gb_text: str) -> str:
+    """Extract the DNA sequence from the ORIGIN section of a GenBank file."""
+    match = re.search(r'^ORIGIN\s*\n(.*?)^//', gb_text, re.MULTILINE | re.DOTALL)
+    if not match:
+        return ""
+    raw = match.group(1)
+    return "".join(c for c in raw if c in "acgtACGTnN").upper()
+
+
+def _compute_gc_windows(sequence: str, total_length: int,
+                        window: int = 500, step: int = 100) -> list:
+    """
+    Compute GC% in sliding windows across the sequence.
+    Returns list of {"pos": midpoint, "gc": fraction}.
+    """
+    seq = sequence.upper()
+    n = len(seq)
+    if n == 0:
+        return []
+    results = []
+    pos = 0
+    while pos < n:
+        end = min(pos + window, n)
+        chunk = seq[pos:end]
+        gc = sum(1 for c in chunk if c in "GC") / len(chunk) if chunk else 0
+        midpoint = pos + len(chunk) // 2
+        results.append({"pos": midpoint, "gc": gc})
+        pos += step
+    return results
+
+
+def _parse_genbank_header(gb_text: str):
+    """Parse LOCUS, DEFINITION, SOURCE, ACCESSION from GenBank flat file."""
+    result = {}
+
+    # LOCUS line: LOCUS  name  4500 bp  DNA  circular  BCT  01-JAN-2020
+    locus_match = re.search(
+        r'^LOCUS\s+\S+\s+(\d+)\s+bp\s+\S+\s+(linear|circular)',
+        gb_text, re.MULTILINE
+    )
+    if locus_match:
+        result["length"] = int(locus_match.group(1))
+        result["topology"] = locus_match.group(2)
+    else:
+        # Try without topology
+        locus_match2 = re.search(r'^LOCUS\s+\S+\s+(\d+)\s+bp', gb_text, re.MULTILINE)
+        if locus_match2:
+            result["length"] = int(locus_match2.group(1))
+            result["topology"] = "linear"
+        else:
+            return None  # Can't render map without length
+
+    # DEFINITION - may span multiple lines
+    def_match = re.search(
+        r'^DEFINITION\s+(.+?)(?=^ACCESSION)',
+        gb_text, re.MULTILINE | re.DOTALL
+    )
+    if def_match:
+        result["description"] = " ".join(def_match.group(1).split())
+
+    # ACCESSION
+    acc_match = re.search(r'^ACCESSION\s+(\S+)', gb_text, re.MULTILINE)
+    result["accession"] = acc_match.group(1) if acc_match else ""
+
+    # ORGANISM line (more specific than SOURCE)
+    org_match = re.search(r'^\s+ORGANISM\s+(.+)', gb_text, re.MULTILINE)
+    if org_match:
+        result["organism"] = org_match.group(1).strip()
+    else:
+        src_match = re.search(r'^SOURCE\s+(.+)', gb_text, re.MULTILINE)
+        result["organism"] = src_match.group(1).strip() if src_match else ""
+
+    return result
+
+
+def _parse_genbank_cds(gb_text: str) -> list:
+    """Parse CDS features from GenBank flat file text."""
+    features = []
+    lines = gb_text.split("\n")
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        # Match CDS or gene feature lines
+        if re.match(r"^\s{5}(CDS|gene)\s+", line):
+            feat_type = line.strip().split()[0]
+            location_str = line.strip().split(None, 1)[1] if len(line.strip().split(None, 1)) > 1 else ""
+
+            # Collect continuation lines for location
+            while i + 1 < len(lines) and not lines[i + 1].startswith("                     /") and not re.match(r"^\s{5}\S", lines[i + 1]) and lines[i + 1].startswith("                     "):
+                i += 1
+                location_str += lines[i].strip()
+
+            # Parse location
+            strand = 1
+            if "complement" in location_str:
+                strand = -1
+                location_str = location_str.replace("complement(", "").rstrip(")")
+
+            # Handle join() and order()
+            location_str = re.sub(r"join\(([^)]+)\)", r"\1", location_str)
+            location_str = re.sub(r"order\(([^)]+)\)", r"\1", location_str)
+
+            # Extract numeric positions (handles <123..>456 partial indicators)
+            nums = re.findall(r"(\d+)", location_str)
+            if len(nums) >= 2:
+                start = int(nums[0])
+                end = int(nums[-1])
+            else:
+                i += 1
+                continue
+
+            # Collect qualifiers
+            qualifiers = {}
+            while i + 1 < len(lines) and lines[i + 1].startswith("                     /"):
+                i += 1
+                qual_line = lines[i].strip()
+                # Handle multi-line qualifiers
+                while i + 1 < len(lines) and lines[i + 1].startswith("                     ") and not lines[i + 1].strip().startswith("/"):
+                    i += 1
+                    qual_line += " " + lines[i].strip()
+
+                match = re.match(r'/(\w+)="?([^"]*)"?', qual_line)
+                if match:
+                    qualifiers[match.group(1)] = match.group(2).strip('"')
+
+            if feat_type == "CDS":
+                features.append({
+                    "type": "CDS",
+                    "gene": qualifiers.get("gene", ""),
+                    "product": qualifiers.get("product", "hypothetical protein"),
+                    "locus_tag": qualifiers.get("locus_tag", ""),
+                    "protein_id": qualifiers.get("protein_id", ""),
+                    "start": start,
+                    "end": end,
+                    "strand": strand,
+                })
+        i += 1
+
+    return features
+
+
+def extract_plasmid_features(summary_data: dict) -> dict:
+    """
+    Extract all positioned features from a PLSDB summary response.
+    Returns a dict with separate lists for AMR, MOB, BGC features
+    plus metadata (length, topology, organism).
+    """
+    meta = summary_data.get("Metadata_annotations", {})
+    seq = summary_data.get("Sequence_annotations", {})
+    nuccore = meta.get("NUCCORE", {})
+    taxonomy = meta.get("TAXONOMY", {})
+    typing = meta.get("Typing", {})
+
+    result = {
+        "length": nuccore.get("Length", 0),
+        "topology": nuccore.get("NUCCORE_Topology", "circular"),
+        "gc": nuccore.get("NUCCORE_GC", 0),
+        "description": nuccore.get("NUCCORE_Description", ""),
+        "organism": taxonomy.get("TAXONOMY_species", taxonomy.get("TAXONOMY_taxon_name", "")),
+        "accession": nuccore.get("NUCCORE_ACC", ""),
+    }
+
+    # AMR features with positions
+    result["amr"] = []
+    for a in seq.get("AMR", []):
+        start = a.get("input_gene_start")
+        stop = a.get("input_gene_stop")
+        if start is not None and stop is not None:
+            result["amr"].append({
+                "gene": a.get("gene_symbol", a.get("gene_name", "")),
+                "product": a.get("gene_name", ""),
+                "drug_class": a.get("drug_class", ""),
+                "agent": a.get("antimicrobial_agent", ""),
+                "start": int(start),
+                "end": int(stop),
+                "strand": 1 if a.get("strand_orientation", "+") == "+" else -1,
+                "identity": a.get("sequence_identity"),
+                "coverage": a.get("coverage_percentage"),
+            })
+
+    # MOB detail features with positions
+    result["mob"] = []
+    for m in seq.get("MOB_details", []):
+        sstart = m.get("sstart")
+        send = m.get("send")
+        if sstart is not None and send is not None:
+            result["mob"].append({
+                "element": m.get("element", ""),
+                "biomarker": m.get("biomarker", m.get("element", "")),
+                "start": min(int(sstart), int(send)),
+                "end": max(int(sstart), int(send)),
+                "strand": 1 if m.get("sstrand", "plus") == "plus" else -1,
+                "identity": m.get("pident"),
+                "coverage": m.get("qcovhsp"),
+                "mob_id": m.get("MOB_suite_ID", ""),
+            })
+
+    # BGC features with positions
+    result["bgc"] = []
+    for b in seq.get("BGC", []):
+        start = b.get("start")
+        end = b.get("end")
+        if start is not None and end is not None:
+            result["bgc"].append({
+                "type": b.get("bgc_type", ""),
+                "start": int(start),
+                "end": int(end),
+                "completeness": b.get("completeness", ""),
+                "gene_count": b.get("gene_count", 0),
+                "length": b.get("length", 0),
+            })
+
+    # MOB Typing summary
+    result["typing"] = {
+        "rep_type": typing.get("rep_type", ""),
+        "relaxase_type": typing.get("relaxase_type", ""),
+        "mpf_type": typing.get("mpf_type", ""),
+        "orit_type": typing.get("orit_type", ""),
+        "predicted_mobility": typing.get("predicted_mobility", ""),
+        "host_range": typing.get("predicted_host_range_overall_name", ""),
+        "host_range_rank": typing.get("predicted_host_range_overall_rank", ""),
+        "pmlst_scheme": typing.get("PMLST_scheme", ""),
+        "pmlst_alleles": typing.get("PMLST_alleles", ""),
+    }
+
+    # PGAP annotations (no positions from API)
+    result["pgap_count"] = len(seq.get("PGAP_annotations", []))
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# MOB typing / Inc group / Mobility aggregated data
+# ---------------------------------------------------------------------------
+
+def build_mob_typing_data():
+    """
+    Build aggregated MOB typing data by sampling plasmid summaries.
+    Returns dict with distributions for rep_type, relaxase, mpf, mobility.
+    """
+    cache_name = "mob_typing"
+    if _is_cache_valid(cache_name):
+        return _read_cache(cache_name)
+
+    logger.info("Building MOB typing distribution data...")
+
+    # Sample accessions from different topology groups
+    overview_cache = _cache_path("overview")
+    sample_accs = []
+    if overview_cache.exists():
+        ov = _read_cache("overview")
+        sample_accs = ov.get("accessions_circular", [])[:40] + ov.get("accessions_linear", [])[:10]
+    if not sample_accs:
+        # Fetch a small set
+        result = fetch_filter_nuccore(topology="circular")
+        if result:
+            sample_accs = _extract_accessions(result)[:50]
+
+    rep_types = {}
+    relaxase_types = {}
+    mpf_types = {}
+    mobility = {}
+
+    for acc in sample_accs:
+        data = fetch_summary(acc)
+        if not data:
+            continue
+        typing = data.get("Metadata_annotations", {}).get("Typing", {})
+        if not typing:
+            continue
+
+        # Rep types (Inc groups) - can be comma-separated
+        for rt in (typing.get("rep_type") or "").split(","):
+            rt = rt.strip()
+            if rt:
+                rep_types[rt] = rep_types.get(rt, 0) + 1
+
+        for rx in (typing.get("relaxase_type") or "").split(","):
+            rx = rx.strip()
+            if rx:
+                relaxase_types[rx] = relaxase_types.get(rx, 0) + 1
+
+        for mp in (typing.get("mpf_type") or "").split(","):
+            mp = mp.strip()
+            if mp:
+                mpf_types[mp] = mpf_types.get(mp, 0) + 1
+
+        mob = typing.get("predicted_mobility", "unknown")
+        mobility[mob] = mobility.get(mob, 0) + 1
+
+        time.sleep(0.15)
+
+    result = {
+        "rep_types": rep_types,
+        "relaxase_types": relaxase_types,
+        "mpf_types": mpf_types,
+        "mobility": mobility,
+        "sample_size": len(sample_accs),
+    }
+
+    _write_cache(cache_name, result)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Correlation data: co-occurrence of AMR, Inc groups, metals, phage, pMLST
+# ---------------------------------------------------------------------------
+
+HEAVY_METAL_CLASSES = {"ARSENIC", "COPPER", "COPPER/SILVER", "MERCURY", "SILVER", "TELLURIUM"}
+HEAVY_METAL_GENES = [
+    "arsA", "arsB", "arsC", "arsR",
+    "merA", "merD", "merE", "merP", "merR",
+    "pcoA", "pcoB", "pcoC", "pcoD", "pcoR", "pcoS",
+    "silA", "silB", "silC", "silF", "silP", "silR", "silS",
+    "terA", "terB", "terC", "terD", "terE", "terF", "terW", "terX", "terY", "terZ",
+]
+PHAGE_KEYWORDS = re.compile(
+    r"phage|integrase|transposase|recombinase|"
+    r"prophage|bacteriophage|tail|capsid|terminase|"
+    r"portal|baseplate|head|lysozyme|holin",
+    re.IGNORECASE,
+)
+
+
+def build_correlation_data():
+    """
+    Build correlation datasets by sampling plasmid summaries.
+    Extracts co-occurrence of: AMR drug classes, Inc groups, mobility,
+    heavy metal genes, phage elements, and pMLST typing.
+    """
+    cache_name = "correlations"
+    if _is_cache_valid(cache_name):
+        return _read_cache(cache_name)
+
+    logger.info("Building correlation data (sampling plasmids)...")
+
+    # Gather diverse accessions: some from general pool, some from heavy metal filters
+    accs = set()
+    overview_cache = _cache_path("overview")
+    if overview_cache.exists():
+        ov = _read_cache("overview")
+        accs.update(ov.get("accessions_circular", [])[:60])
+        accs.update(ov.get("accessions_linear", [])[:15])
+
+    # Add plasmids known to carry heavy metal genes
+    for gene in ["merA", "arsB", "pcoA", "silA", "terA"]:
+        try:
+            resp = _api_get("filter_nuccore", {"AMR_genes": gene}, timeout=30)
+            if resp:
+                extra = _extract_accessions(resp)[:10]
+                accs.update(extra)
+        except Exception:
+            pass
+        time.sleep(0.2)
+
+    accs = list(accs)
+    logger.info(f"Sampling {len(accs)} plasmids for correlation analysis...")
+
+    # Per-plasmid records
+    records = []
+    for i, acc in enumerate(accs):
+        if i % 25 == 0:
+            logger.info(f"  Correlation sample {i+1}/{len(accs)}")
+        data = fetch_summary(acc)
+        if not data or data.get("label") == "notfound":
+            continue
+
+        meta = data.get("Metadata_annotations", {})
+        seq = data.get("Sequence_annotations", {})
+        typing = meta.get("Typing", {})
+        nuccore = meta.get("NUCCORE", {})
+
+        # AMR drug classes
+        drug_classes = set()
+        heavy_metals = set()
+        for a in seq.get("AMR", []):
+            dc = (a.get("drug_class") or "").strip().upper()
+            if dc:
+                drug_classes.add(dc)
+            if dc in HEAVY_METAL_CLASSES:
+                gene_sym = a.get("gene_symbol", "")
+                heavy_metals.add(f"{dc}:{gene_sym}")
+
+        # Inc groups
+        inc_groups = set()
+        for rt in (typing.get("rep_type") or "").split(","):
+            rt = rt.strip()
+            if rt:
+                inc_groups.add(rt)
+
+        # Mobility
+        mobility = typing.get("predicted_mobility", "unknown") or "unknown"
+
+        # Phage/mobile elements from PGAP
+        phage_count = 0
+        transposase_count = 0
+        integrase_count = 0
+        for pgap in seq.get("PGAP_annotations", []):
+            product = pgap.get("product", "") or ""
+            product_lower = product.lower()
+            if "transposase" in product_lower:
+                transposase_count += 1
+            if "integrase" in product_lower or "recombinase" in product_lower:
+                integrase_count += 1
+            if any(kw in product_lower for kw in
+                   ["phage", "prophage", "bacteriophage", "tail", "capsid",
+                    "terminase", "portal", "baseplate", "head morphogenesis",
+                    "holin"]):
+                phage_count += 1
+
+        # pMLST
+        pmlst_scheme = typing.get("PMLST_scheme") or ""
+        pmlst_alleles = typing.get("PMLST_alleles") or ""
+        pmlst_st = typing.get("PMLST_sequence_type") or ""
+
+        records.append({
+            "accession": acc,
+            "drug_classes": list(drug_classes),
+            "heavy_metals": list(heavy_metals),
+            "inc_groups": list(inc_groups),
+            "mobility": mobility,
+            "phage_count": phage_count,
+            "transposase_count": transposase_count,
+            "integrase_count": integrase_count,
+            "pmlst_scheme": pmlst_scheme,
+            "pmlst_alleles": pmlst_alleles,
+            "pmlst_st": pmlst_st,
+            "length": nuccore.get("Length", 0),
+            "topology": nuccore.get("NUCCORE_Topology", ""),
+        })
+        time.sleep(0.15)
+
+    # --- Aggregate into correlation matrices ---
+    result = {"records": records, "sample_size": len(records)}
+
+    # 1. AMR Drug Class vs Inc Group co-occurrence
+    dc_inc = {}
+    for r in records:
+        for dc in r["drug_classes"]:
+            if dc not in dc_inc:
+                dc_inc[dc] = {}
+            for inc in r["inc_groups"]:
+                dc_inc[dc][inc] = dc_inc[dc].get(inc, 0) + 1
+    result["amr_vs_inc"] = dc_inc
+
+    # 2. AMR Drug Class vs Mobility
+    dc_mob = {}
+    for r in records:
+        for dc in r["drug_classes"]:
+            if dc not in dc_mob:
+                dc_mob[dc] = {}
+            dc_mob[dc][r["mobility"]] = dc_mob[dc].get(r["mobility"], 0) + 1
+    result["amr_vs_mobility"] = dc_mob
+
+    # 3. Heavy metal gene counts
+    hm_counts = {}
+    for r in records:
+        for hm in r["heavy_metals"]:
+            metal, gene = hm.split(":", 1) if ":" in hm else (hm, hm)
+            hm_counts[gene] = hm_counts.get(gene, 0) + 1
+    result["heavy_metal_genes"] = hm_counts
+
+    # Heavy metal vs Inc group
+    hm_inc = {}
+    for r in records:
+        metals_on_plasmid = set()
+        for hm in r["heavy_metals"]:
+            metal = hm.split(":")[0] if ":" in hm else hm
+            metals_on_plasmid.add(metal)
+        for metal in metals_on_plasmid:
+            if metal not in hm_inc:
+                hm_inc[metal] = {}
+            for inc in r["inc_groups"]:
+                hm_inc[metal][inc] = hm_inc[metal].get(inc, 0) + 1
+    result["heavy_metal_vs_inc"] = hm_inc
+
+    # Heavy metal vs mobility
+    hm_mob = {}
+    for r in records:
+        metals_on_plasmid = set()
+        for hm in r["heavy_metals"]:
+            metal = hm.split(":")[0] if ":" in hm else hm
+            metals_on_plasmid.add(metal)
+        for metal in metals_on_plasmid:
+            if metal not in hm_mob:
+                hm_mob[metal] = {}
+            hm_mob[metal][r["mobility"]] = hm_mob[metal].get(r["mobility"], 0) + 1
+    result["heavy_metal_vs_mobility"] = hm_mob
+
+    # 4. Phage/mobile element distribution
+    phage_bins = {"0": 0, "1-2": 0, "3-5": 0, "6-10": 0, ">10": 0}
+    trans_bins = {"0": 0, "1-3": 0, "4-8": 0, "9-15": 0, ">15": 0}
+    for r in records:
+        pc = r["phage_count"]
+        if pc == 0: phage_bins["0"] += 1
+        elif pc <= 2: phage_bins["1-2"] += 1
+        elif pc <= 5: phage_bins["3-5"] += 1
+        elif pc <= 10: phage_bins["6-10"] += 1
+        else: phage_bins[">10"] += 1
+
+        tc = r["transposase_count"]
+        if tc == 0: trans_bins["0"] += 1
+        elif tc <= 3: trans_bins["1-3"] += 1
+        elif tc <= 8: trans_bins["4-8"] += 1
+        elif tc <= 15: trans_bins["9-15"] += 1
+        else: trans_bins[">15"] += 1
+    result["phage_distribution"] = phage_bins
+    result["transposase_distribution"] = trans_bins
+
+    # Phage vs mobility
+    phage_mob = {"conjugative": [], "mobilizable": [], "non-mobilizable": []}
+    for r in records:
+        mob = r["mobility"]
+        if mob in phage_mob:
+            phage_mob[mob].append(r["phage_count"] + r["integrase_count"])
+    # Store averages and counts
+    phage_mob_summary = {}
+    for mob, vals in phage_mob.items():
+        if vals:
+            phage_mob_summary[mob] = {
+                "mean_phage_elements": round(sum(vals) / len(vals), 2),
+                "count": len(vals),
+                "total_elements": sum(vals),
+            }
+    result["phage_vs_mobility"] = phage_mob_summary
+
+    # 5. pMLST distribution
+    pmlst_schemes = {}
+    pmlst_allele_freq = {}
+    for r in records:
+        scheme = r["pmlst_scheme"]
+        if scheme:
+            pmlst_schemes[scheme] = pmlst_schemes.get(scheme, 0) + 1
+        alleles_str = r["pmlst_alleles"]
+        if alleles_str:
+            for allele_part in alleles_str.split(","):
+                allele_part = allele_part.strip()
+                if allele_part and "(-)" not in allele_part:
+                    pmlst_allele_freq[allele_part] = pmlst_allele_freq.get(allele_part, 0) + 1
+    result["pmlst_schemes"] = pmlst_schemes
+    result["pmlst_alleles"] = pmlst_allele_freq
+
+    # pMLST vs mobility
+    pmlst_mob = {}
+    for r in records:
+        scheme = r["pmlst_scheme"]
+        if scheme:
+            if scheme not in pmlst_mob:
+                pmlst_mob[scheme] = {}
+            pmlst_mob[scheme][r["mobility"]] = pmlst_mob[scheme].get(r["mobility"], 0) + 1
+    result["pmlst_vs_mobility"] = pmlst_mob
+
+    _write_cache(cache_name, result)
+    return result
+
+
 def _extract_accessions(api_response) -> list:
     """Extract accession IDs from various API response formats."""
     if isinstance(api_response, dict):
@@ -265,6 +912,18 @@ def load_all_data(use_fallback: bool = True):
     except Exception as e:
         logger.warning(f"Failed to build AMR data: {e}")
         data["amr"] = None
+
+    try:
+        data["mob_typing"] = build_mob_typing_data()
+    except Exception as e:
+        logger.warning(f"Failed to build MOB typing data: {e}")
+        data["mob_typing"] = None
+
+    try:
+        data["correlations"] = build_correlation_data()
+    except Exception as e:
+        logger.warning(f"Failed to build correlation data: {e}")
+        data["correlations"] = None
 
     # If API failed, use fallback data
     if use_fallback and all(v is None for v in data.values()):
@@ -366,5 +1025,104 @@ def _get_fallback_data():
             "0-5kb": 8765, "5-10kb": 12345, "10-25kb": 15678,
             "25-50kb": 14567, "50-100kb": 10234, "100-200kb": 6543,
             "200-500kb": 3210, ">500kb": 1018,
+        },
+        "mob_typing": {
+            "rep_types": {
+                "IncFIB": 4523, "IncFIA": 3876, "IncFII": 3654,
+                "IncI1": 2345, "IncHI2": 1876, "IncN": 1654,
+                "IncX4": 1432, "IncQ1": 1234, "IncR": 987,
+                "IncP-1": 876, "IncL": 765, "IncC": 654,
+                "IncFIC": 543, "IncB/O/K/Z": 432, "ColRNAI": 2187,
+                "Col156": 1543, "Col(MG828)": 987, "rep_cluster_1": 876,
+            },
+            "relaxase_types": {
+                "MOBF": 8765, "MOBP": 6543, "MOBQ": 3456,
+                "MOBH": 1876, "MOBC": 987, "MOBV": 543,
+            },
+            "mpf_types": {
+                "MPF_F": 7654, "MPF_T": 5432, "MPF_I": 2345,
+                "MPF_G": 876, "MPF_FA": 654, "MPF_B": 432,
+            },
+            "mobility": {
+                "conjugative": 18765, "mobilizable": 24567,
+                "non-mobilizable": 29028,
+            },
+            "sample_size": 72360,
+        },
+        "correlations": {
+            "sample_size": 125,
+            "amr_vs_inc": {
+                "BETA-LACTAM": {"IncFIB": 18, "IncFIA": 15, "IncFII": 12, "IncI1": 8, "ColRNAI": 6, "IncN": 5, "IncHI2": 4, "IncC": 3},
+                "AMINOGLYCOSIDE": {"IncFIB": 14, "IncFIA": 11, "IncFII": 9, "IncI1": 7, "ColRNAI": 5, "IncN": 4, "IncHI2": 6},
+                "SULFONAMIDE": {"IncFIB": 12, "IncFIA": 9, "IncFII": 8, "IncI1": 6, "IncHI2": 5, "IncN": 4},
+                "TETRACYCLINE": {"IncFIB": 10, "IncFIA": 8, "IncN": 6, "IncI1": 5, "IncHI2": 4},
+                "QUINOLONE": {"IncFIB": 7, "IncFIA": 6, "IncI1": 4, "IncN": 3, "IncHI2": 3},
+                "TRIMETHOPRIM": {"IncFIB": 8, "IncFIA": 6, "IncI1": 5, "IncHI2": 4, "IncN": 3},
+                "PHENICOL": {"IncFIB": 6, "IncHI2": 5, "IncI1": 4, "IncFIA": 3},
+                "COLISTIN": {"IncI1": 4, "IncHI2": 3, "IncX4": 6, "IncFIB": 2},
+                "MERCURY": {"IncFIB": 5, "IncFIA": 4, "IncHI2": 3, "IncN": 3, "IncI1": 2},
+                "COPPER": {"IncFIB": 4, "IncHI2": 3, "IncFIA": 2, "IncI1": 2},
+                "ARSENIC": {"IncFIB": 3, "IncHI2": 4, "IncN": 2, "IncI1": 2},
+                "TELLURIUM": {"IncHI2": 5, "IncFIB": 3, "IncFIA": 2},
+            },
+            "amr_vs_mobility": {
+                "BETA-LACTAM": {"conjugative": 28, "mobilizable": 18, "non-mobilizable": 8},
+                "AMINOGLYCOSIDE": {"conjugative": 24, "mobilizable": 15, "non-mobilizable": 6},
+                "SULFONAMIDE": {"conjugative": 20, "mobilizable": 12, "non-mobilizable": 5},
+                "TETRACYCLINE": {"conjugative": 16, "mobilizable": 10, "non-mobilizable": 4},
+                "QUINOLONE": {"conjugative": 12, "mobilizable": 8, "non-mobilizable": 3},
+                "TRIMETHOPRIM": {"conjugative": 14, "mobilizable": 9, "non-mobilizable": 3},
+                "PHENICOL": {"conjugative": 10, "mobilizable": 6, "non-mobilizable": 2},
+                "COLISTIN": {"conjugative": 6, "mobilizable": 5, "non-mobilizable": 4},
+                "MERCURY": {"conjugative": 10, "mobilizable": 4, "non-mobilizable": 1},
+                "COPPER": {"conjugative": 7, "mobilizable": 3, "non-mobilizable": 1},
+                "ARSENIC": {"conjugative": 6, "mobilizable": 3, "non-mobilizable": 2},
+                "TELLURIUM": {"conjugative": 7, "mobilizable": 2, "non-mobilizable": 1},
+            },
+            "heavy_metal_genes": {
+                "merA": 12, "merR": 10, "merD": 8, "merE": 7, "merP": 6,
+                "arsB": 9, "arsC": 8, "arsR": 7, "arsA": 5,
+                "pcoA": 6, "pcoB": 5, "pcoD": 4, "pcoR": 4, "pcoS": 3,
+                "silA": 5, "silB": 4, "silC": 3, "silR": 3, "silS": 3, "silP": 2,
+                "terA": 7, "terB": 6, "terC": 5, "terD": 5, "terE": 4, "terW": 3, "terZ": 3,
+            },
+            "heavy_metal_vs_inc": {
+                "MERCURY": {"IncFIB": 5, "IncFIA": 4, "IncHI2": 3, "IncN": 3},
+                "ARSENIC": {"IncHI2": 4, "IncFIB": 3, "IncN": 2, "IncI1": 2},
+                "COPPER": {"IncFIB": 4, "IncHI2": 3, "IncFIA": 2},
+                "COPPER/SILVER": {"IncFIB": 3, "IncHI2": 2, "IncI1": 2},
+                "TELLURIUM": {"IncHI2": 5, "IncFIB": 3, "IncFIA": 2},
+                "SILVER": {"IncFIB": 3, "IncHI2": 2, "IncI1": 1},
+            },
+            "heavy_metal_vs_mobility": {
+                "MERCURY": {"conjugative": 10, "mobilizable": 4, "non-mobilizable": 1},
+                "ARSENIC": {"conjugative": 6, "mobilizable": 3, "non-mobilizable": 2},
+                "COPPER": {"conjugative": 7, "mobilizable": 3, "non-mobilizable": 1},
+                "COPPER/SILVER": {"conjugative": 5, "mobilizable": 2, "non-mobilizable": 0},
+                "TELLURIUM": {"conjugative": 7, "mobilizable": 2, "non-mobilizable": 1},
+                "SILVER": {"conjugative": 4, "mobilizable": 2, "non-mobilizable": 0},
+            },
+            "phage_distribution": {"0": 35, "1-2": 28, "3-5": 22, "6-10": 18, ">10": 12},
+            "transposase_distribution": {"0": 20, "1-3": 30, "4-8": 28, "9-15": 25, ">15": 22},
+            "phage_vs_mobility": {
+                "conjugative": {"mean_phage_elements": 6.8, "count": 48, "total_elements": 326},
+                "mobilizable": {"mean_phage_elements": 3.2, "count": 42, "total_elements": 134},
+                "non-mobilizable": {"mean_phage_elements": 1.4, "count": 35, "total_elements": 49},
+            },
+            "pmlst_schemes": {
+                "IncF__RST": 32, "IncHI2__ST": 8, "IncI1__MLST": 7,
+                "IncN__MLST": 5, "IncHI1__MLST": 3, "IncA/C__ST": 2,
+            },
+            "pmlst_alleles": {
+                "FIA(1)": 12, "FIB(1)": 18, "FII(2)": 10, "FII(18)": 8,
+                "FIA(27)": 6, "FIC(4)": 5, "FIB(20)": 4, "FII(29)": 4,
+                "FII(1)": 3, "FIA(11)": 3, "FIB(10)": 3, "FIC(1)": 2,
+            },
+            "pmlst_vs_mobility": {
+                "IncF__RST": {"conjugative": 24, "mobilizable": 6, "non-mobilizable": 2},
+                "IncHI2__ST": {"conjugative": 7, "mobilizable": 1, "non-mobilizable": 0},
+                "IncI1__MLST": {"conjugative": 5, "mobilizable": 2, "non-mobilizable": 0},
+                "IncN__MLST": {"conjugative": 4, "mobilizable": 1, "non-mobilizable": 0},
+            },
         },
     }

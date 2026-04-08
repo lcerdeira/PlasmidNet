@@ -5,8 +5,8 @@
 
 body {
     font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    background-color: #0f172a;
-    color: #f1f5f9;
+    background-color: #faf7f2;
+    color: #1e293b;
     line-height: 1.6;
 }
 
@@ -18,12 +18,13 @@ body {
 
 /* --- Header --- */
 .header {
-    background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
-    border-bottom: 1px solid #334155;
-    padding: 18px 32px;
+    background: linear-gradient(135deg, #ffffff 0%, #f0ebe3 100%);
+    border-bottom: 1px solid #e2ddd5;
+    padding: 14px 32px;
     position: sticky;
     top: 0;
     z-index: 100;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
 }
 
 .header-content {
@@ -34,20 +35,15 @@ body {
     align-items: center;
 }
 
-.logo {
-    font-size: 1.75rem;
-    font-weight: 800;
-    background: linear-gradient(135deg, #38bdf8, #818cf8);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    background-clip: text;
-    letter-spacing: -0.5px;
-    margin: 0;
+.logo-img {
+    height: 80px;
+    width: auto;
+    display: block;
 }
 
 .subtitle {
     font-size: 0.85rem;
-    color: #94a3b8;
+    color: #64748b;
     margin-left: 14px;
     font-weight: 400;
 }
@@ -58,7 +54,7 @@ body {
 }
 
 .header-link {
-    color: #94a3b8;
+    color: #64748b;
     text-decoration: none;
     font-size: 0.85rem;
     font-weight: 500;
@@ -68,8 +64,8 @@ body {
 }
 
 .header-link:hover {
-    color: #f1f5f9;
-    background: #334155;
+    color: #1e293b;
+    background: #f0ebe3;
 }
 
 /* --- Main Content --- */
@@ -90,8 +86,8 @@ body {
 }
 
 .stat-card {
-    background: #1e293b;
-    border: 1px solid #334155;
+    background: #ffffff;
+    border: 1px solid #e2ddd5;
     border-radius: 12px;
     padding: 20px 24px;
     display: flex;
@@ -102,7 +98,7 @@ body {
 
 .stat-card:hover {
     transform: translateY(-2px);
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.06);
 }
 
 .stat-icon {
@@ -113,14 +109,14 @@ body {
 .stat-value {
     font-size: 1.5rem;
     font-weight: 700;
-    color: #f1f5f9;
+    color: #1e293b;
     margin: 0;
     line-height: 1.2;
 }
 
 .stat-label {
     font-size: 0.8rem;
-    color: #94a3b8;
+    color: #64748b;
     margin: 2px 0 0 0;
     text-transform: uppercase;
     letter-spacing: 0.5px;
@@ -137,10 +133,10 @@ body {
 }
 
 .tab {
-    background: #1e293b !important;
-    border: 1px solid #334155 !important;
+    background: #ffffff !important;
+    border: 1px solid #e2ddd5 !important;
     border-radius: 8px 8px 0 0 !important;
-    color: #94a3b8 !important;
+    color: #64748b !important;
     font-weight: 500 !important;
     padding: 10px 24px !important;
     font-size: 0.9rem !important;
@@ -149,39 +145,39 @@ body {
 }
 
 .tab:hover {
-    color: #f1f5f9 !important;
-    background: #334155 !important;
+    color: #1e293b !important;
+    background: #f0ebe3 !important;
 }
 
 .tab--selected {
-    background: #334155 !important;
-    color: #38bdf8 !important;
-    border-bottom: 2px solid #38bdf8 !important;
+    background: #f0ebe3 !important;
+    color: #0d9488 !important;
+    border-bottom: 2px solid #0d9488 !important;
 }
 
 /* --- Chart Cards --- */
 .chart-card {
-    background: #1e293b;
-    border: 1px solid #334155;
+    background: #ffffff;
+    border: 1px solid #e2ddd5;
     border-radius: 12px;
     padding: 24px;
     transition: box-shadow 0.2s;
 }
 
 .chart-card:hover {
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.05);
 }
 
 .chart-title {
     font-size: 1rem;
     font-weight: 600;
-    color: #f1f5f9;
+    color: #1e293b;
     margin: 0 0 4px 0;
 }
 
 .chart-subtitle {
     font-size: 0.8rem;
-    color: #94a3b8;
+    color: #64748b;
     margin: 0 0 12px 0;
 }
 
@@ -216,16 +212,16 @@ body {
 .filter-label {
     display: block;
     font-size: 0.8rem;
-    color: #94a3b8;
+    color: #64748b;
     margin-bottom: 4px;
     font-weight: 500;
 }
 
 .filter-input {
-    background: #0f172a !important;
-    border: 1px solid #334155 !important;
+    background: #faf7f2 !important;
+    border: 1px solid #e2ddd5 !important;
     border-radius: 8px !important;
-    color: #f1f5f9 !important;
+    color: #1e293b !important;
     padding: 8px 14px !important;
     font-size: 0.9rem !important;
     width: 240px !important;
@@ -233,13 +229,13 @@ body {
 }
 
 .filter-input:focus {
-    border-color: #38bdf8 !important;
+    border-color: #0d9488 !important;
     outline: none !important;
 }
 
 .btn-primary {
-    background: linear-gradient(135deg, #38bdf8, #818cf8);
-    color: #0f172a;
+    background: linear-gradient(135deg, #0d9488, #6366f1);
+    color: #ffffff;
     border: none;
     border-radius: 8px;
     padding: 9px 24px;
@@ -260,8 +256,8 @@ body {
 
 .btn-secondary {
     background: transparent;
-    color: #38bdf8;
-    border: 1px solid #38bdf8;
+    color: #0d9488;
+    border: 1px solid #0d9488;
     border-radius: 8px;
     padding: 8px 20px;
     font-size: 0.85rem;
@@ -272,8 +268,8 @@ body {
 }
 
 .btn-secondary:hover {
-    background: rgba(56, 189, 248, 0.1);
-    color: #38bdf8;
+    background: rgba(13, 148, 136, 0.08);
+    color: #0d9488;
 }
 
 /* --- Lookup --- */
@@ -301,8 +297,8 @@ body {
 }
 
 .detail-item {
-    background: #0f172a;
-    border: 1px solid #334155;
+    background: #faf7f2;
+    border: 1px solid #e2ddd5;
     border-radius: 8px;
     padding: 12px 16px;
     display: flex;
@@ -311,7 +307,7 @@ body {
 
 .detail-label {
     font-size: 0.75rem;
-    color: #94a3b8;
+    color: #64748b;
     text-transform: uppercase;
     letter-spacing: 0.5px;
     font-weight: 500;
@@ -320,7 +316,7 @@ body {
 
 .detail-value {
     font-size: 0.95rem;
-    color: #f1f5f9;
+    color: #1e293b;
     font-weight: 500;
     word-break: break-all;
 }
@@ -332,14 +328,14 @@ body {
 
 .result-count {
     font-size: 1rem;
-    color: #34d399;
+    color: #10b981;
     font-weight: 600;
     margin-bottom: 12px;
 }
 
 /* --- Text Utils --- */
 .text-muted {
-    color: #94a3b8;
+    color: #64748b;
     font-size: 0.9rem;
 }
 
@@ -350,20 +346,20 @@ body {
 
 /* --- Footer --- */
 .footer {
-    background: #1e293b;
-    border-top: 1px solid #334155;
+    background: #ffffff;
+    border-top: 1px solid #e2ddd5;
     padding: 18px 32px;
     text-align: center;
 }
 
 .footer p {
-    color: #64748b;
+    color: #94a3b8;
     font-size: 0.8rem;
     margin: 0;
 }
 
 .footer a {
-    color: #38bdf8;
+    color: #0d9488;
     text-decoration: none;
 }
 
@@ -426,16 +422,111 @@ body {
 }
 
 ::-webkit-scrollbar-track {
-    background: #0f172a;
+    background: #faf7f2;
 }
 
 ::-webkit-scrollbar-thumb {
-    background: #334155;
+    background: #cbd5e1;
     border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-    background: #475569;
+    background: #94a3b8;
+}
+
+/* --- Viewer Components --- */
+.viewer-checklist {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.viewer-checklist label {
+    color: #64748b;
+    font-size: 0.85rem;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+}
+
+.viewer-checklist input[type="checkbox"] {
+    accent-color: #0d9488;
+    width: 16px;
+    height: 16px;
+}
+
+.ring-legend {
+    display: flex;
+    gap: 20px;
+    margin: 16px 0 8px 0;
+    flex-wrap: wrap;
+}
+
+.legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.8rem;
+    color: #64748b;
+}
+
+.legend-dot {
+    width: 12px;
+    height: 12px;
+    border-radius: 3px;
+    display: inline-block;
+}
+
+.feature-badges {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin: 16px 0;
+}
+
+.badge {
+    background: #f0ebe3;
+    color: #1e293b;
+    font-size: 0.8rem;
+    font-weight: 500;
+    padding: 5px 14px;
+    border-radius: 20px;
+    border: 1px solid #e2ddd5;
+}
+
+/* --- Plasmid Map Image --- */
+.plasmid-map-img {
+    width: 100%;
+    max-width: 800px;
+    display: block;
+    margin: 16px auto;
+    border-radius: 8px;
+}
+
+/* --- Correlation Section --- */
+.section-header {
+    margin-bottom: 20px;
+}
+
+.section-title {
+    font-size: 1.3rem;
+    font-weight: 700;
+    color: #1e293b;
+    margin: 0 0 4px 0;
+}
+
+.correlation-section {
+    margin-bottom: 28px;
+}
+
+.correlation-heading {
+    font-size: 1.05rem;
+    font-weight: 600;
+    color: #0d9488;
+    margin: 0 0 14px 0;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #e2ddd5;
 }
 
 /* --- Plotly overrides --- */
