@@ -1,11 +1,11 @@
 # PlasmidNet
 
-Interactive dashboard for exploring the [PLSDB 2025](https://ccb-microbe.cs.uni-saarland.de/plsdb2025/) plasmid database (72,360+ plasmids).
+Interactive dashboard for exploring the [PLSDB](https://ccb-microbe.cs.uni-saarland.de/plsdb2025/) plasmid database (72,360+ plasmids).
 
 ## Features
 
 - **Overview**: Topology, source, kingdom distributions; temporal trends; GC content and length distributions
-- **Taxonomy Explorer**: Top 20 host genera visualization with live taxonomy search via PLSDB API
+- **Taxonomy Explorer**: Top 20 host genera visualization
 - **AMR Analysis**: Antimicrobial resistance gene frequencies grouped by drug class
 - **Plasmid Lookup**: Search individual plasmids by NCBI accession and view full metadata
 
@@ -47,9 +47,6 @@ eb open
 ## Tech Stack
 
 - [Dash](https://dash.plotly.com/) + [Plotly](https://plotly.com/) for interactive visualizations
-- [PLSDB API](https://ccb-microbe.cs.uni-saarland.de/plsdb2025/api/) for live data
 - Gunicorn for production serving
 
-## Data Source
 
-All data is sourced from PLSDB 2025 (Plasmid Database) maintained by the Computational Biology group at Saarland University.
