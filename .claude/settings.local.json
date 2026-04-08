@@ -1,7 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(/usr/bin/python3 -c ':*)"
-    ]
-  }
-}
