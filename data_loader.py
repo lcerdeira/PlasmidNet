@@ -627,47 +627,103 @@ PHAGE_KEYWORDS = re.compile(
 )
 
 
+_TA_NAMES = {"rele", "relb", "higa", "higb", "mazf", "maze", "ccda", "ccdb",
+             "pard", "pare", "parc", "hicb", "hica", "vapb", "vapc",
+             "phd", "doc", "yoeb", "yefm", "mqsr", "mqsa", "hipb", "hipa",
+             "pema", "pemk", "zeta", "epsilon"}
+_VIR_PREFIXES = ("vir", "iro", "iuc", "iut", "ybt", "fyua", "sit", "kfu",
+                 "clb", "cnf", "hly", "tsh", "iss", "cia", "cva", "pic",
+                 "sat", "pet", "esp", "eae", "afa", "pap", "fim", "sfa", "iha")
+_QAC_NAMES = {"qace", "qaca", "qacb", "qacc", "qacd", "qacf", "qacg",
+              "qach", "qacj", "qacr", "smr", "emre", "suge"}
+_MOB_PREFIXES = ("mob", "tra", "trb", "trc", "trf", "trh", "tri",
+                 "trk", "trn", "tro", "trp", "tru", "trw", "virb", "vird")
+
+
+def _classify_pgap(gene: str, product: str) -> str:
+    """Lightweight gene classifier for PGAP annotations (no app import)."""
+    g = gene.lower()
+    p = product.lower()
+    # TA
+    if g in _TA_NAMES or any(kw in p for kw in
+            ("toxin-antitoxin", "addiction module", "killer protein",
+             "antitoxin", "type ii toxin", "plasmid stabilization")):
+        return "TA"
+    # VIR
+    if any(g.startswith(pf) for pf in _VIR_PREFIXES) or any(
+            kw in p for kw in ("virulence", "hemolysin", "siderophore",
+                               "aerobactin", "yersiniabactin", "colicin")):
+        return "VIR"
+    # QAC
+    if g in _QAC_NAMES or g.startswith("qac") or any(
+            kw in p for kw in ("quaternary ammonium", "qac efflux",
+                               "small multidrug resistance")):
+        return "QAC"
+    # MOB
+    if any(g.startswith(pf) for pf in _MOB_PREFIXES) or any(
+            kw in p for kw in ("mobilization", "conjugal", "conjugative",
+                               "type iv secretion", "mating pair", "relaxase")):
+        return "MOB_gb"
+    return ""
+
+
 def build_correlation_data():
     """
-    Build correlation datasets by sampling plasmid summaries.
+    Build correlation datasets by sampling ~500 plasmid summaries.
     Extracts co-occurrence of: AMR drug classes, Inc groups, mobility,
-    heavy metal genes, phage elements, and pMLST typing.
+    heavy metals, phage, pMLST, **virulence factors, TA systems, QAC**.
     """
     cache_name = "correlations"
     if _is_cache_valid(cache_name):
         return _read_cache(cache_name)
 
-    logger.info("Building correlation data (sampling plasmids)...")
+    logger.info("Building correlation data (large sample)...")
 
-    # Gather diverse accessions: some from general pool, some from heavy metal filters
+    # ── Gather a large, diverse set of accessions ───────────────────
     accs = set()
-    overview_cache = _cache_path("overview")
-    if overview_cache.exists():
-        ov = _read_cache("overview")
-        accs.update(ov.get("accessions_circular", [])[:60])
-        accs.update(ov.get("accessions_linear", [])[:15])
 
-    # Add plasmids known to carry heavy metal genes
-    for gene in ["merA", "arsB", "pcoA", "silA", "terA"]:
+    # 1. Random sample from the full database
+    try:
+        resp = _api_get("filter_nuccore", {"NUCCORE_Topology": "circular"}, timeout=120)
+        if resp:
+            all_circ = _extract_accessions(resp)
+            logger.info(f"  Total circular accessions: {len(all_circ)}")
+            import random
+            random.seed(42)  # reproducible
+            accs.update(random.sample(all_circ, min(400, len(all_circ))))
+    except Exception as e:
+        logger.warning(f"  Failed to get circular accessions: {e}")
+
+    try:
+        resp = _api_get("filter_nuccore", {"NUCCORE_Topology": "linear"}, timeout=120)
+        if resp:
+            all_lin = _extract_accessions(resp)
+            import random
+            random.seed(42)
+            accs.update(random.sample(all_lin, min(50, len(all_lin))))
+    except Exception:
+        pass
+
+    # 2. Ensure representation of heavy-metal and virulence plasmids
+    for gene in ["merA", "arsB", "pcoA", "silA", "terA", "iucA", "hlyA"]:
         try:
             resp = _api_get("filter_nuccore", {"AMR_genes": gene}, timeout=30)
             if resp:
-                extra = _extract_accessions(resp)[:10]
-                accs.update(extra)
+                accs.update(_extract_accessions(resp)[:15])
         except Exception:
             pass
-        time.sleep(0.2)
+        time.sleep(0.15)
 
     accs = list(accs)
     logger.info(f"Sampling {len(accs)} plasmids for correlation analysis...")
 
-    # Per-plasmid records
+    # ── Fetch summary for each plasmid ──────────────────────────────
     records = []
     for i, acc in enumerate(accs):
-        if i % 25 == 0:
+        if i % 50 == 0:
             logger.info(f"  Correlation sample {i+1}/{len(accs)}")
         data = fetch_summary(acc)
-        if not data or data.get("label") == "notfound":
+        if not data or "Metadata_annotations" not in data:
             continue
 
         meta = data.get("Metadata_annotations", {})
@@ -675,7 +731,7 @@ def build_correlation_data():
         typing = meta.get("Typing", {})
         nuccore = meta.get("NUCCORE", {})
 
-        # AMR drug classes
+        # AMR drug classes + heavy metals (from PLSDB AMR array)
         drug_classes = set()
         heavy_metals = set()
         for a in seq.get("AMR", []):
@@ -696,27 +752,38 @@ def build_correlation_data():
         # Mobility
         mobility = typing.get("predicted_mobility", "unknown") or "unknown"
 
-        # Phage/mobile elements from PGAP
+        # Scan PGAP annotations for TA, VIR, QAC, MOB, phage
+        ta_genes, vir_genes, qac_genes, mob_genes_gb = [], [], [], []
         phage_count = 0
         transposase_count = 0
         integrase_count = 0
         for pgap in seq.get("PGAP_annotations", []):
+            gene_name = pgap.get("gene") or pgap.get("locus_tag") or ""
             product = pgap.get("product", "") or ""
             product_lower = product.lower()
+
+            cat = _classify_pgap(gene_name, product)
+            if cat == "TA":
+                ta_genes.append(gene_name)
+            elif cat == "VIR":
+                vir_genes.append(gene_name)
+            elif cat == "QAC":
+                qac_genes.append(gene_name)
+            elif cat == "MOB_gb":
+                mob_genes_gb.append(gene_name)
+
             if "transposase" in product_lower:
                 transposase_count += 1
             if "integrase" in product_lower or "recombinase" in product_lower:
                 integrase_count += 1
             if any(kw in product_lower for kw in
                    ["phage", "prophage", "bacteriophage", "tail", "capsid",
-                    "terminase", "portal", "baseplate", "head morphogenesis",
-                    "holin"]):
+                    "terminase", "portal", "baseplate", "holin"]):
                 phage_count += 1
 
         # pMLST
         pmlst_scheme = typing.get("PMLST_scheme") or ""
         pmlst_alleles = typing.get("PMLST_alleles") or ""
-        pmlst_st = typing.get("PMLST_sequence_type") or ""
 
         records.append({
             "accession": acc,
@@ -724,136 +791,173 @@ def build_correlation_data():
             "heavy_metals": list(heavy_metals),
             "inc_groups": list(inc_groups),
             "mobility": mobility,
+            "ta_genes": ta_genes,
+            "vir_genes": vir_genes,
+            "qac_genes": qac_genes,
+            "mob_genes_gb": mob_genes_gb,
             "phage_count": phage_count,
             "transposase_count": transposase_count,
             "integrase_count": integrase_count,
             "pmlst_scheme": pmlst_scheme,
             "pmlst_alleles": pmlst_alleles,
-            "pmlst_st": pmlst_st,
+            "pmlst_st": typing.get("PMLST_sequence_type") or "",
             "length": nuccore.get("Length", 0),
             "topology": nuccore.get("NUCCORE_Topology", ""),
+            "has_ta": len(ta_genes) > 0,
+            "has_vir": len(vir_genes) > 0,
+            "has_qac": len(qac_genes) > 0,
         })
-        time.sleep(0.15)
+        time.sleep(0.12)
 
-    # --- Aggregate into correlation matrices ---
-    result = {"records": records, "sample_size": len(records)}
+    # ── Aggregate into correlation matrices ─────────────────────────
+    result = {"sample_size": len(records)}
 
-    # 1. AMR Drug Class vs Inc Group co-occurrence
-    dc_inc = {}
-    for r in records:
-        for dc in r["drug_classes"]:
-            if dc not in dc_inc:
-                dc_inc[dc] = {}
-            for inc in r["inc_groups"]:
-                dc_inc[dc][inc] = dc_inc[dc].get(inc, 0) + 1
-    result["amr_vs_inc"] = dc_inc
+    # helper: build co-occurrence matrix  {row_key: {col_key: count}}
+    def _cooccur(records, row_fn, col_fn):
+        mat = {}
+        for r in records:
+            for rv in row_fn(r):
+                if rv not in mat:
+                    mat[rv] = {}
+                for cv in col_fn(r):
+                    mat[rv][cv] = mat[rv].get(cv, 0) + 1
+        return mat
 
-    # 2. AMR Drug Class vs Mobility
-    dc_mob = {}
-    for r in records:
-        for dc in r["drug_classes"]:
-            if dc not in dc_mob:
-                dc_mob[dc] = {}
-            dc_mob[dc][r["mobility"]] = dc_mob[dc].get(r["mobility"], 0) + 1
-    result["amr_vs_mobility"] = dc_mob
+    inc_fn = lambda r: r["inc_groups"]
+    mob_fn = lambda r: [r["mobility"]]
 
-    # 3. Heavy metal gene counts
-    hm_counts = {}
+    # 1. AMR Drug Class vs Inc Group / Mobility
+    result["amr_vs_inc"] = _cooccur(records, lambda r: r["drug_classes"], inc_fn)
+    result["amr_vs_mobility"] = _cooccur(records, lambda r: r["drug_classes"], mob_fn)
+
+    # 2. Heavy metal
+    def _metals(r):
+        return list({hm.split(":")[0] for hm in r["heavy_metals"]})
+    result["heavy_metal_genes"] = {}
     for r in records:
         for hm in r["heavy_metals"]:
-            metal, gene = hm.split(":", 1) if ":" in hm else (hm, hm)
-            hm_counts[gene] = hm_counts.get(gene, 0) + 1
-    result["heavy_metal_genes"] = hm_counts
+            g = hm.split(":", 1)[1] if ":" in hm else hm
+            result["heavy_metal_genes"][g] = result["heavy_metal_genes"].get(g, 0) + 1
+    result["heavy_metal_vs_inc"] = _cooccur(records, _metals, inc_fn)
+    result["heavy_metal_vs_mobility"] = _cooccur(records, _metals, mob_fn)
 
-    # Heavy metal vs Inc group
-    hm_inc = {}
-    for r in records:
-        metals_on_plasmid = set()
-        for hm in r["heavy_metals"]:
-            metal = hm.split(":")[0] if ":" in hm else hm
-            metals_on_plasmid.add(metal)
-        for metal in metals_on_plasmid:
-            if metal not in hm_inc:
-                hm_inc[metal] = {}
-            for inc in r["inc_groups"]:
-                hm_inc[metal][inc] = hm_inc[metal].get(inc, 0) + 1
-    result["heavy_metal_vs_inc"] = hm_inc
-
-    # Heavy metal vs mobility
-    hm_mob = {}
-    for r in records:
-        metals_on_plasmid = set()
-        for hm in r["heavy_metals"]:
-            metal = hm.split(":")[0] if ":" in hm else hm
-            metals_on_plasmid.add(metal)
-        for metal in metals_on_plasmid:
-            if metal not in hm_mob:
-                hm_mob[metal] = {}
-            hm_mob[metal][r["mobility"]] = hm_mob[metal].get(r["mobility"], 0) + 1
-    result["heavy_metal_vs_mobility"] = hm_mob
-
-    # 4. Phage/mobile element distribution
+    # 3. Phage / transposase
     phage_bins = {"0": 0, "1-2": 0, "3-5": 0, "6-10": 0, ">10": 0}
     trans_bins = {"0": 0, "1-3": 0, "4-8": 0, "9-15": 0, ">15": 0}
-    for r in records:
-        pc = r["phage_count"]
-        if pc == 0: phage_bins["0"] += 1
-        elif pc <= 2: phage_bins["1-2"] += 1
-        elif pc <= 5: phage_bins["3-5"] += 1
-        elif pc <= 10: phage_bins["6-10"] += 1
-        else: phage_bins[">10"] += 1
-
-        tc = r["transposase_count"]
-        if tc == 0: trans_bins["0"] += 1
-        elif tc <= 3: trans_bins["1-3"] += 1
-        elif tc <= 8: trans_bins["4-8"] += 1
-        elif tc <= 15: trans_bins["9-15"] += 1
-        else: trans_bins[">15"] += 1
-    result["phage_distribution"] = phage_bins
-    result["transposase_distribution"] = trans_bins
-
-    # Phage vs mobility
     phage_mob = {"conjugative": [], "mobilizable": [], "non-mobilizable": []}
     for r in records:
+        pc = r["phage_count"]
+        for lo, hi, label in [(0,0,"0"),(1,2,"1-2"),(3,5,"3-5"),(6,10,"6-10")]:
+            if lo <= pc <= hi:
+                phage_bins[label] += 1
+                break
+        else:
+            phage_bins[">10"] += 1
+        tc = r["transposase_count"]
+        for lo, hi, label in [(0,0,"0"),(1,3,"1-3"),(4,8,"4-8"),(9,15,"9-15")]:
+            if lo <= tc <= hi:
+                trans_bins[label] += 1
+                break
+        else:
+            trans_bins[">15"] += 1
         mob = r["mobility"]
         if mob in phage_mob:
-            phage_mob[mob].append(r["phage_count"] + r["integrase_count"])
-    # Store averages and counts
+            phage_mob[mob].append(pc + r["integrase_count"])
+    result["phage_distribution"] = phage_bins
+    result["transposase_distribution"] = trans_bins
     phage_mob_summary = {}
     for mob, vals in phage_mob.items():
         if vals:
             phage_mob_summary[mob] = {
                 "mean_phage_elements": round(sum(vals) / len(vals), 2),
-                "count": len(vals),
-                "total_elements": sum(vals),
+                "count": len(vals), "total_elements": sum(vals),
             }
     result["phage_vs_mobility"] = phage_mob_summary
 
-    # 5. pMLST distribution
+    # 4. pMLST
     pmlst_schemes = {}
     pmlst_allele_freq = {}
     for r in records:
-        scheme = r["pmlst_scheme"]
-        if scheme:
-            pmlst_schemes[scheme] = pmlst_schemes.get(scheme, 0) + 1
-        alleles_str = r["pmlst_alleles"]
-        if alleles_str:
-            for allele_part in alleles_str.split(","):
-                allele_part = allele_part.strip()
-                if allele_part and "(-)" not in allele_part:
-                    pmlst_allele_freq[allele_part] = pmlst_allele_freq.get(allele_part, 0) + 1
+        if r["pmlst_scheme"]:
+            pmlst_schemes[r["pmlst_scheme"]] = pmlst_schemes.get(r["pmlst_scheme"], 0) + 1
+        if r["pmlst_alleles"]:
+            for part in r["pmlst_alleles"].split(","):
+                part = part.strip()
+                if part and "(-)" not in part:
+                    pmlst_allele_freq[part] = pmlst_allele_freq.get(part, 0) + 1
     result["pmlst_schemes"] = pmlst_schemes
     result["pmlst_alleles"] = pmlst_allele_freq
+    result["pmlst_vs_mobility"] = _cooccur(
+        [r for r in records if r["pmlst_scheme"]],
+        lambda r: [r["pmlst_scheme"]], mob_fn)
 
-    # pMLST vs mobility
-    pmlst_mob = {}
+    # ── NEW: 5. Virulence factors vs Inc / Mobility ─────────────────
+    has_vir_fn = lambda r: ["has_VIR"] if r["has_vir"] else []
+    vir_inc = {}
+    vir_mob = {"conjugative": 0, "mobilizable": 0, "non-mobilizable": 0}
+    vir_total = 0
     for r in records:
-        scheme = r["pmlst_scheme"]
-        if scheme:
-            if scheme not in pmlst_mob:
-                pmlst_mob[scheme] = {}
-            pmlst_mob[scheme][r["mobility"]] = pmlst_mob[scheme].get(r["mobility"], 0) + 1
-    result["pmlst_vs_mobility"] = pmlst_mob
+        if r["has_vir"]:
+            vir_total += 1
+            mob = r["mobility"]
+            if mob in vir_mob:
+                vir_mob[mob] += 1
+            for inc in r["inc_groups"]:
+                vir_inc[inc] = vir_inc.get(inc, 0) + 1
+    result["vir_vs_inc"] = vir_inc
+    result["vir_vs_mobility"] = vir_mob
+    result["vir_total"] = vir_total
+
+    # Top virulence gene names
+    vir_gene_counts = {}
+    for r in records:
+        for g in r["vir_genes"]:
+            vir_gene_counts[g] = vir_gene_counts.get(g, 0) + 1
+    result["vir_gene_counts"] = vir_gene_counts
+
+    # ── NEW: 6. Toxin-Antitoxin vs Inc / Mobility ───────────────────
+    ta_inc = {}
+    ta_mob = {"conjugative": 0, "mobilizable": 0, "non-mobilizable": 0}
+    ta_total = 0
+    for r in records:
+        if r["has_ta"]:
+            ta_total += 1
+            mob = r["mobility"]
+            if mob in ta_mob:
+                ta_mob[mob] += 1
+            for inc in r["inc_groups"]:
+                ta_inc[inc] = ta_inc.get(inc, 0) + 1
+    result["ta_vs_inc"] = ta_inc
+    result["ta_vs_mobility"] = ta_mob
+    result["ta_total"] = ta_total
+
+    ta_gene_counts = {}
+    for r in records:
+        for g in r["ta_genes"]:
+            ta_gene_counts[g] = ta_gene_counts.get(g, 0) + 1
+    result["ta_gene_counts"] = ta_gene_counts
+
+    # ── NEW: 7. QAC vs Inc / Mobility ───────────────────────────────
+    qac_inc = {}
+    qac_mob = {"conjugative": 0, "mobilizable": 0, "non-mobilizable": 0}
+    qac_total = 0
+    for r in records:
+        if r["has_qac"]:
+            qac_total += 1
+            mob = r["mobility"]
+            if mob in qac_mob:
+                qac_mob[mob] += 1
+            for inc in r["inc_groups"]:
+                qac_inc[inc] = qac_inc.get(inc, 0) + 1
+    result["qac_vs_inc"] = qac_inc
+    result["qac_vs_mobility"] = qac_mob
+    result["qac_total"] = qac_total
+
+    qac_gene_counts = {}
+    for r in records:
+        for g in r["qac_genes"]:
+            qac_gene_counts[g] = qac_gene_counts.get(g, 0) + 1
+    result["qac_gene_counts"] = qac_gene_counts
 
     _write_cache(cache_name, result)
     return result

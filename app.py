@@ -311,9 +311,12 @@ FEAT_COLORS = {
     "AMR": "#e74c3c",
     "MOB": "#f0ad4e",
     "BGC": "#9b59b6",
-    "GC_above": "rgba(13,148,136,0.35)",
-    "GC_below": "rgba(231,76,60,0.25)",
-    "GC_line": "#0d9488",
+    "TA": "#e67e22",
+    "VIR": "#c0392b",
+    "QAC": "#1abc9c",
+    "GC_high": "#0d9488",
+    "GC_low": "#e74c3c",
+    "GC_mean": "#94a3b8",
 }
 
 
@@ -324,7 +327,8 @@ def make_plasmid_map(plasmid_features: dict, genbank_features: list = None,
     Returns a go.Figure with zoom and hover-tooltip support.
 
     Rings (outside-in):
-      Forward CDS  |  Reverse CDS  |  AMR / MOB / BGC  |  GC content
+      Forward CDS | Reverse CDS | Classified features | GC content (Barpolar)
+    Genes are colour-coded by classify_gene(): AMR, MOB, TA, VIR, QAC, Metal.
     """
     fig = go.Figure()
     length = plasmid_features.get("length", 1)
@@ -334,152 +338,117 @@ def make_plasmid_map(plasmid_features: dict, genbank_features: list = None,
     def bp_to_deg(bp):
         return (bp / length) * 360
 
-    # ── ring radii (base, height) for go.Barpolar ───────────────────
-    R_CDS_FWD = (8.0, 1.5)
-    R_CDS_REV = (6.0, 1.5)
-    R_FEAT    = (4.0, 1.5)
-    R_GC_MID  = 2.2           # centre-line of GC ring
-    R_GC_AMP  = 1.2           # max deviation from centre
+    # ── Ring radii (base, bar-height) ───────────────────────────────
+    R_FWD  = (9.0, 1.5)   # forward CDS
+    R_REV  = (7.0, 1.5)   # reverse CDS
+    R_FEAT = (5.0, 1.5)   # PLSDB features (AMR/MOB/BGC with positions)
+    R_GC   = (2.5, 2.0)   # GC content bars
 
-    # Helper: build one Barpolar trace for a list of features
-    def _add_ring(feats, base, height, color, name, legend_group,
+    # Map classify_gene() categories → colour
+    CAT_COLOR = {
+        "AMR":   FEAT_COLORS["AMR"],
+        "MOB":   FEAT_COLORS["MOB"],
+        "TA":    FEAT_COLORS["TA"],
+        "VIR":   FEAT_COLORS["VIR"],
+        "QAC":   FEAT_COLORS["QAC"],
+        "Metal": "#8e44ad",
+    }
+
+    # ── helper: add a Barpolar ring ─────────────────────────────────
+    def _add_ring(feats, base, height, default_color, name, lg,
                   hover_fn, show_legend=True):
         if not feats:
             return
         thetas, widths, hovers, colors_list = [], [], [], []
         for f in feats:
             s, e = f["start"], f["end"]
-            mid_deg = bp_to_deg((s + e) / 2)
-            span_deg = max(bp_to_deg(e - s), 0.6)
-            thetas.append(mid_deg)
-            widths.append(span_deg)
+            thetas.append(bp_to_deg((s + e) / 2))
+            widths.append(max(bp_to_deg(e - s), 0.6))
             hovers.append(hover_fn(f))
-            colors_list.append(f.get("_color", color))
+            colors_list.append(f.get("_color", default_color))
         fig.add_trace(go.Barpolar(
-            r=[height] * len(feats), theta=thetas, width=widths,
-            base=base,
+            r=[height] * len(feats), theta=thetas, width=widths, base=base,
             marker_color=colors_list, marker_line_color="white",
             marker_line_width=0.4, opacity=0.88,
-            name=name, legendgroup=legend_group,
-            showlegend=show_legend,
+            name=name, legendgroup=lg, showlegend=show_legend,
             hovertext=hovers, hoverinfo="text",
         ))
 
-    # ── Forward-strand CDS ──────────────────────────────────────────
-    if genbank_features:
-        fwd = []
-        for f in genbank_features:
-            if f.get("strand", 1) != 1:
-                continue
-            gene = f.get("gene") or f.get("locus_tag") or ""
-            is_amr = _is_amr_gene(gene, f.get("product", ""))
-            fwd.append({**f, "_color": FEAT_COLORS["AMR"] if is_amr else FEAT_COLORS["CDS_fwd"]})
-        _add_ring(
-            fwd, *R_CDS_FWD, FEAT_COLORS["CDS_fwd"],
-            "CDS forward", "cds_fwd",
-            lambda f: (
-                f"<b>{f.get('gene') or f.get('locus_tag','')}</b><br>"
-                f"{f.get('product','')}<br>"
-                f"{f['start']:,} – {f['end']:,} bp<br>"
-                f"Strand: forward (+)"
-            ),
-        )
-
-    # ── Reverse-strand CDS ──────────────────────────────────────────
-    if genbank_features:
-        rev = []
-        for f in genbank_features:
-            if f.get("strand", 1) != -1:
-                continue
-            gene = f.get("gene") or f.get("locus_tag") or ""
-            is_amr = _is_amr_gene(gene, f.get("product", ""))
-            rev.append({**f, "_color": FEAT_COLORS["AMR"] if is_amr else FEAT_COLORS["CDS_rev"]})
-        _add_ring(
-            rev, *R_CDS_REV, FEAT_COLORS["CDS_rev"],
-            "CDS reverse", "cds_rev",
-            lambda f: (
-                f"<b>{f.get('gene') or f.get('locus_tag','')}</b><br>"
-                f"{f.get('product','')}<br>"
-                f"{f['start']:,} – {f['end']:,} bp<br>"
-                f"Strand: reverse (–)"
-            ),
-        )
-
-    # ── AMR features from PLSDB ─────────────────────────────────────
-    amr_feats = plasmid_features.get("amr", [])
-    _add_ring(
-        amr_feats, *R_FEAT, FEAT_COLORS["AMR"],
-        "AMR (PLSDB)", "amr",
-        lambda f: (
-            f"<b>AMR: {f.get('gene','')}</b><br>"
+    # ── helper: CDS hover text ──────────────────────────────────────
+    def _cds_hover(f, strand_label):
+        gene = f.get("gene") or f.get("locus_tag") or ""
+        cat = f.get("_cat", "CDS")
+        cat_line = f"<b>[{cat}]</b> " if cat != "CDS" else ""
+        return (
+            f"{cat_line}<b>{gene}</b><br>"
             f"{f.get('product','')}<br>"
-            f"Drug: {f.get('drug_class','') or f.get('agent','')}<br>"
-            f"{f['start']:,} – {f['end']:,} bp"
-        ),
-    )
-
-    # ── MOB elements from PLSDB ─────────────────────────────────────
-    mob_feats = plasmid_features.get("mob", [])
-    _add_ring(
-        mob_feats, *R_FEAT, FEAT_COLORS["MOB"],
-        "MOB", "mob",
-        lambda f: (
-            f"<b>MOB: {f.get('element','')}</b><br>"
-            f"Biomarker: {f.get('biomarker','')}<br>"
             f"{f['start']:,} – {f['end']:,} bp<br>"
-            f"Identity: {f.get('identity','N/A')}%"
-        ),
-    )
+            f"Strand: {strand_label}"
+        )
 
-    # ── BGC regions from PLSDB ──────────────────────────────────────
-    bgc_feats = plasmid_features.get("bgc", [])
-    _add_ring(
-        bgc_feats, *R_FEAT, FEAT_COLORS["BGC"],
-        "BGC", "bgc",
-        lambda f: (
-            f"<b>BGC: {f.get('type','')}</b><br>"
-            f"Completeness: {f.get('completeness','')}<br>"
-            f"{f['start']:,} – {f['end']:,} bp<br>"
-            f"Genes: {f.get('gene_count',0)}"
-        ),
-    )
+    # ── Classify GenBank CDS genes ──────────────────────────────────
+    if genbank_features:
+        fwd, rev = [], []
+        for f in genbank_features:
+            gene = f.get("gene") or f.get("locus_tag") or ""
+            product = f.get("product", "")
+            cat = classify_gene(gene, product)
+            color = CAT_COLOR.get(cat, FEAT_COLORS["CDS_fwd"] if f.get("strand", 1) == 1
+                                  else FEAT_COLORS["CDS_rev"])
+            entry = {**f, "_color": color, "_cat": cat}
+            if f.get("strand", 1) == 1:
+                fwd.append(entry)
+            else:
+                rev.append(entry)
 
-    # ── GC content ring (Scatterpolar) ──────────────────────────────
+        _add_ring(fwd, *R_FWD, FEAT_COLORS["CDS_fwd"], "CDS forward", "cds_fwd",
+                  lambda f: _cds_hover(f, "forward (+)"))
+        _add_ring(rev, *R_REV, FEAT_COLORS["CDS_rev"], "CDS reverse", "cds_rev",
+                  lambda f: _cds_hover(f, "reverse (–)"))
+
+    # ── PLSDB positioned features (AMR / MOB / BGC) ────────────────
+    for feats, color, name, lg, hover_fn in [
+        (plasmid_features.get("amr", []), FEAT_COLORS["AMR"], "AMR (PLSDB)", "amr_p",
+         lambda f: f"<b>AMR: {f.get('gene','')}</b><br>{f.get('product','')}<br>"
+                   f"Drug: {f.get('drug_class','') or f.get('agent','')}<br>"
+                   f"{f['start']:,} – {f['end']:,} bp"),
+        (plasmid_features.get("mob", []), FEAT_COLORS["MOB"], "MOB (PLSDB)", "mob_p",
+         lambda f: f"<b>MOB: {f.get('element','')}</b><br>"
+                   f"Biomarker: {f.get('biomarker','')}<br>"
+                   f"{f['start']:,} – {f['end']:,} bp"),
+        (plasmid_features.get("bgc", []), FEAT_COLORS["BGC"], "BGC (PLSDB)", "bgc_p",
+         lambda f: f"<b>BGC: {f.get('type','')}</b><br>"
+                   f"Completeness: {f.get('completeness','')}<br>"
+                   f"{f['start']:,} – {f['end']:,} bp"),
+    ]:
+        _add_ring(feats, *R_FEAT, color, name, lg, hover_fn)
+
+    # ── GC content ring (Barpolar, coloured above/below mean) ──────
     if gc_profile:
         gc_vals = [p["gc"] for p in gc_profile]
         gc_mean = sum(gc_vals) / len(gc_vals)
         gc_max_dev = max(abs(v - gc_mean) for v in gc_vals) or 0.01
 
-        thetas = [bp_to_deg(p["pos"]) for p in gc_profile]
-        radii = [
-            R_GC_MID + ((v - gc_mean) / gc_max_dev) * R_GC_AMP
-            for v in gc_vals
-        ]
-        hover_gc = [f"GC: {v*100:.1f}%" for v in gc_vals]
+        gc_thetas, gc_widths, gc_heights, gc_colors, gc_hovers = [], [], [], [], []
+        step_deg = bp_to_deg(gc_profile[1]["pos"] - gc_profile[0]["pos"]) if len(gc_profile) > 1 else 1
+        for p in gc_profile:
+            gc_thetas.append(bp_to_deg(p["pos"]))
+            gc_widths.append(step_deg)
+            dev = (p["gc"] - gc_mean) / gc_max_dev
+            gc_heights.append(R_GC[1] / 2 + dev * R_GC[1] / 2)
+            gc_colors.append(FEAT_COLORS["GC_high"] if p["gc"] >= gc_mean
+                             else FEAT_COLORS["GC_low"])
+            gc_hovers.append(f"GC: {p['gc']*100:.1f}%  (mean {gc_mean*100:.1f}%)")
 
-        # Close the loop
-        thetas_c = thetas + [thetas[0]]
-        radii_c = radii + [radii[0]]
-        hover_c = hover_gc + [hover_gc[0]]
-
-        fig.add_trace(go.Scatterpolar(
-            r=radii_c, theta=thetas_c,
-            fill="toself",
-            fillcolor=FEAT_COLORS["GC_above"],
-            line=dict(color=FEAT_COLORS["GC_line"], width=1),
+        fig.add_trace(go.Barpolar(
+            r=gc_heights, theta=gc_thetas, width=gc_widths,
+            base=R_GC[0],
+            marker_color=gc_colors, marker_line_width=0, opacity=0.6,
             name="GC content", legendgroup="gc",
-            hovertext=hover_c, hoverinfo="text",
-        ))
-        # Mean circle
-        mean_theta = list(range(0, 361, 2))
-        fig.add_trace(go.Scatterpolar(
-            r=[R_GC_MID] * len(mean_theta), theta=mean_theta,
-            mode="lines",
-            line=dict(color="#94a3b8", width=0.5, dash="dot"),
-            showlegend=False, hoverinfo="skip",
+            hovertext=gc_hovers, hoverinfo="text",
         ))
 
-    # ── Gene name annotations for named genes ───────────────────────
+    # ── Gene name annotations ───────────────────────────────────────
     if genbank_features:
         for f in genbank_features:
             gene = f.get("gene") or ""
@@ -487,11 +456,8 @@ def make_plasmid_map(plasmid_features: dict, genbank_features: list = None,
                 continue
             mid_deg = bp_to_deg((f["start"] + f["end"]) / 2)
             strand = f.get("strand", 1)
-            if strand == 1:
-                r_lbl = R_CDS_FWD[0] + R_CDS_FWD[1] + 0.45
-            else:
-                r_lbl = R_CDS_REV[0] - 0.45
-            angle_rad = math.radians(90 - mid_deg)   # plotly polar: 0°=east, CW
+            r_lbl = R_FWD[0] + R_FWD[1] + 0.5 if strand == 1 else R_REV[0] - 0.5
+            angle_rad = math.radians(90 - mid_deg)
             fig.add_annotation(
                 x=r_lbl * math.cos(angle_rad),
                 y=r_lbl * math.sin(angle_rad),
@@ -522,19 +488,16 @@ def make_plasmid_map(plasmid_features: dict, genbank_features: list = None,
     fig.add_annotation(
         x=0.5, y=0.5, xref="paper", yref="paper",
         text=center, showarrow=False,
-        font=dict(size=11, color=COLORS["text"]),
-        align="center",
+        font=dict(size=11, color=COLORS["text"]), align="center",
     )
 
     # ── Layout ──────────────────────────────────────────────────────
-    outer = R_CDS_FWD[0] + R_CDS_FWD[1] + 2
+    outer = R_FWD[0] + R_FWD[1] + 2
     fig.update_layout(
         template=PLOTLY_TEMPLATE,
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
         font_color=COLORS["text"],
-        margin=dict(t=30, b=30, l=30, r=30),
-        height=720,
+        margin=dict(t=30, b=30, l=30, r=30), height=720,
         polar=dict(
             radialaxis=dict(visible=False, range=[0, outer]),
             angularaxis=dict(
@@ -547,7 +510,7 @@ def make_plasmid_map(plasmid_features: dict, genbank_features: list = None,
         ),
         legend=dict(
             orientation="h", yanchor="top", y=-0.03,
-            xanchor="center", x=0.5, font_size=11,
+            xanchor="center", x=0.5, font_size=10,
             bgcolor="rgba(255,255,255,0.85)",
         ),
         hoverlabel=dict(
@@ -563,13 +526,98 @@ def _is_amr_gene(gene_name: str, product: str) -> bool:
     """Check if a gene is an AMR gene based on name or product."""
     amr_prefixes = ("bla", "aph", "aac", "ant", "aad", "mec", "van", "erm",
                     "tet", "sul", "dfr", "qnr", "mcr", "fos", "cat", "cfr",
-                    "mph", "lin", "str", "flo", "mer", "ars", "pco", "sil")
+                    "mph", "lin", "str", "flo")
     g = gene_name.lower()
     if any(g.startswith(p) for p in amr_prefixes):
         return True
     p = product.lower()
-    return any(kw in p for kw in ("beta-lactamase", "carbapenem", "resistance",
+    return any(kw in p for kw in ("beta-lactamase", "carbapenem",
                                    "aminoglycoside", "phosphotransferase"))
+
+
+def _is_mob_gene(gene_name: str, product: str) -> bool:
+    """Check if a gene is a mobilization / conjugation gene."""
+    mob_prefixes = ("mob", "tra", "trb", "trc", "trf", "trh", "tri", "trk",
+                    "trn", "tro", "trp", "tru", "trw", "virb", "vird")
+    g = gene_name.lower()
+    if any(g.startswith(p) for p in mob_prefixes):
+        return True
+    p = product.lower()
+    return any(kw in p for kw in ("mobilization", "conjugal", "conjugative",
+                                   "type iv secretion", "mating pair",
+                                   "coupling protein", "relaxase"))
+
+
+def _is_ta_gene(gene_name: str, product: str) -> bool:
+    """Check if a gene is a toxin-antitoxin system component."""
+    ta_names = {"rele", "relb", "higa", "higb", "mazf", "maze", "ccda", "ccdb",
+                "pard", "pare", "parc", "hicb", "hica", "vapb", "vapc",
+                "phd", "doc", "yoeb", "yefm", "mqsr", "mqsa", "hipb", "hipa",
+                "pema", "pemk", "zeta", "epsilon", "fic", "yafq", "dina",
+                "brna", "brnb", "pasa", "pasb", "pasc", "rnla", "rnlb"}
+    if gene_name.lower() in ta_names:
+        return True
+    p = product.lower()
+    return any(kw in p for kw in ("toxin-antitoxin", "addiction module",
+                                   "killer protein", "antitoxin",
+                                   "type ii toxin", "plasmid stabilization"))
+
+
+def _is_virulence_gene(gene_name: str, product: str) -> bool:
+    """Check if a gene is a virulence factor."""
+    vir_prefixes = ("vir", "iro", "iuc", "iut", "ybt", "fyua", "sit", "kfu",
+                    "clb", "cnf", "hly", "tsh", "iss", "cia", "cva", "cvab",
+                    "etsa", "etsb", "pic", "sat", "pet", "esp", "eae",
+                    "afa", "pap", "fim", "sfa", "iha", "hra")
+    g = gene_name.lower()
+    if any(g.startswith(p) for p in vir_prefixes):
+        return True
+    p = product.lower()
+    return any(kw in p for kw in ("virulence", "hemolysin", "siderophore",
+                                   "aerobactin", "yersiniabactin",
+                                   "colicin", "invasin", "adhesin"))
+
+
+def _is_qac_gene(gene_name: str, product: str) -> bool:
+    """Check if a gene confers quaternary ammonium compound resistance."""
+    qac_names = {"qace", "qaca", "qacb", "qacc", "qacd", "qacf", "qacg",
+                 "qach", "qacj", "qacr", "smr", "emre", "sugE"}
+    g = gene_name.lower()
+    if g in qac_names or g.startswith("qac"):
+        return True
+    p = product.lower()
+    return any(kw in p for kw in ("quaternary ammonium", "qac efflux",
+                                   "small multidrug resistance"))
+
+
+def _is_metal_gene(gene_name: str, product: str) -> bool:
+    """Check if a gene confers heavy metal resistance."""
+    metal_prefixes = ("mer", "ars", "pco", "sil", "ter", "cop", "cus", "czc",
+                      "cad", "pbr", "chr", "nik")
+    g = gene_name.lower()
+    if any(g.startswith(p) for p in metal_prefixes):
+        return True
+    p = product.lower()
+    return any(kw in p for kw in ("mercury", "arsenic", "copper", "silver",
+                                   "tellurium", "lead", "cadmium", "chromate",
+                                   "heavy metal"))
+
+
+def classify_gene(gene_name: str, product: str) -> str:
+    """Classify a gene into a functional category. Returns the category name."""
+    if _is_amr_gene(gene_name, product):
+        return "AMR"
+    if _is_mob_gene(gene_name, product):
+        return "MOB"
+    if _is_ta_gene(gene_name, product):
+        return "TA"
+    if _is_virulence_gene(gene_name, product):
+        return "VIR"
+    if _is_qac_gene(gene_name, product):
+        return "QAC"
+    if _is_metal_gene(gene_name, product):
+        return "Metal"
+    return "CDS"
 
 
 def _nice_tick_interval(length):
@@ -988,6 +1036,72 @@ def make_pmlst_mobility_chart():
 
 
 # ---------------------------------------------------------------------------
+# Virulence, TA, QAC correlation charts
+# ---------------------------------------------------------------------------
+
+def _make_feature_inc_chart(data_key, title_label, bar_color):
+    """Bar chart: Inc groups carrying a specific feature category."""
+    inc_data = correlations.get(data_key, {})
+    if not inc_data:
+        return go.Figure()
+    df = pd.DataFrame(
+        sorted(inc_data.items(), key=lambda x: x[1], reverse=True)[:15],
+        columns=["Inc Group", "Plasmids"],
+    )
+    fig = px.bar(df, x="Plasmids", y="Inc Group", orientation="h",
+                 color_discrete_sequence=[bar_color])
+    fig.update_layout(
+        template=PLOTLY_TEMPLATE, paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)", font_color=COLORS["text"],
+        margin=dict(t=10, b=30, l=10, r=10), height=420,
+        yaxis=dict(autorange="reversed"),
+        xaxis_title=f"Plasmids with {title_label}", yaxis_title="",
+    )
+    return fig
+
+
+def _make_feature_mobility_chart(data_key, title_label):
+    """Donut: mobility distribution of plasmids carrying a feature."""
+    mob_data = correlations.get(data_key, {})
+    if not mob_data or sum(mob_data.values()) == 0:
+        return go.Figure()
+    labels = [k.capitalize() for k in mob_data.keys()]
+    values = list(mob_data.values())
+    colors = [COLORS["accent3"], COLORS["accent"], COLORS["accent4"]]
+    fig = go.Figure(go.Pie(
+        labels=labels, values=values, hole=0.55,
+        marker_colors=colors[:len(labels)],
+        textinfo="label+percent", textfont_size=12,
+        hovertemplate="<b>%{label}</b><br>Count: %{value:,}<extra></extra>",
+    ))
+    fig.update_layout(
+        template=PLOTLY_TEMPLATE, paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)", font_color=COLORS["text"],
+        margin=dict(t=10, b=10, l=10, r=10), height=350, showlegend=False,
+    )
+    return fig
+
+
+def _make_gene_frequency_chart(data_key, title_label, bar_color):
+    """Bar chart: top gene names for a feature category."""
+    gene_data = correlations.get(data_key, {})
+    if not gene_data:
+        return go.Figure()
+    df = pd.DataFrame(
+        sorted(gene_data.items(), key=lambda x: x[1], reverse=True)[:20],
+        columns=["Gene", "Count"],
+    )
+    fig = px.bar(df, x="Gene", y="Count", color_discrete_sequence=[bar_color])
+    fig.update_layout(
+        template=PLOTLY_TEMPLATE, paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)", font_color=COLORS["text"],
+        margin=dict(t=10, b=10, l=10, r=10), height=350,
+        xaxis_tickangle=-45, xaxis_title="", yaxis_title="Plasmid Count",
+    )
+    return fig
+
+
+# ---------------------------------------------------------------------------
 # Layout
 # ---------------------------------------------------------------------------
 
@@ -1008,10 +1122,10 @@ HEADER = html.Div(className="header", children=[
 ])
 
 STATS_ROW = html.Div(className="stats-row", children=[
-    stat_card("Total Plasmids", overview.get("total", 72360), "🧬", COLORS["accent"]),
-    stat_card("Annotations", overview.get("total_annotations", 6027698), "📋", COLORS["accent2"]),
-    stat_card("Virulence Factors", overview.get("total_virulence_factors", 250691), "⚠", COLORS["accent4"]),
-    stat_card("Biosynthetic Gene Clusters", overview.get("total_bgcs", 12796), "🔬", COLORS["accent3"]),
+    stat_card("Total Plasmids", overview.get("total", 72360), COLORS["accent"]),
+    stat_card("Annotations", overview.get("total_annotations", 6027698), COLORS["accent2"]),
+    stat_card("Virulence Factors", overview.get("total_virulence_factors", 250691), COLORS["accent4"]),
+    stat_card("Biosynthetic Gene Clusters", overview.get("total_bgcs", 12796), COLORS["accent3"]),
 ])
 
 TABS = html.Div(className="tabs-container", children=[
@@ -1322,6 +1436,117 @@ def correlations_tab():
                 ]),
             ]),
         ]),
+
+        # --- 5. Virulence Factors ---
+        html.Div(className="correlation-section", children=[
+            html.H3(
+                f"5. Virulence Factors ({correlations.get('vir_total', 0):,} "
+                f"plasmids with virulence genes)",
+                className="correlation-heading",
+            ),
+            html.Div(className="chart-grid-2", children=[
+                html.Div(className="chart-card", children=[
+                    html.H3("Top Virulence Genes", className="chart-title"),
+                    html.P("Most frequent virulence-associated genes",
+                           className="chart-subtitle"),
+                    dcc.Graph(figure=_make_gene_frequency_chart(
+                        "vir_gene_counts", "virulence", "#c0392b"),
+                        config={"displayModeBar": False}),
+                ]),
+                html.Div(className="chart-card", children=[
+                    html.H3("Virulence x Mobility", className="chart-title"),
+                    html.P("Transfer potential of virulence-carrying plasmids",
+                           className="chart-subtitle"),
+                    dcc.Graph(figure=_make_feature_mobility_chart(
+                        "vir_vs_mobility", "virulence"),
+                        config={"displayModeBar": False}),
+                ]),
+            ]),
+            html.Div(className="chart-grid-1", children=[
+                html.Div(className="chart-card", children=[
+                    html.H3("Virulence x Inc Group", className="chart-title"),
+                    html.P("Which Inc groups carry virulence factors",
+                           className="chart-subtitle"),
+                    dcc.Graph(figure=_make_feature_inc_chart(
+                        "vir_vs_inc", "virulence", "#c0392b"),
+                        config={"displayModeBar": False}),
+                ]),
+            ]),
+        ]),
+
+        # --- 6. Toxin-Antitoxin Systems ---
+        html.Div(className="correlation-section", children=[
+            html.H3(
+                f"6. Toxin-Antitoxin Systems ({correlations.get('ta_total', 0):,} "
+                f"plasmids with TA genes)",
+                className="correlation-heading",
+            ),
+            html.Div(className="chart-grid-2", children=[
+                html.Div(className="chart-card", children=[
+                    html.H3("Top TA Genes", className="chart-title"),
+                    html.P("Toxin-antitoxin system components",
+                           className="chart-subtitle"),
+                    dcc.Graph(figure=_make_gene_frequency_chart(
+                        "ta_gene_counts", "TA", "#e67e22"),
+                        config={"displayModeBar": False}),
+                ]),
+                html.Div(className="chart-card", children=[
+                    html.H3("TA x Mobility", className="chart-title"),
+                    html.P("Mobility of plasmids carrying TA systems",
+                           className="chart-subtitle"),
+                    dcc.Graph(figure=_make_feature_mobility_chart(
+                        "ta_vs_mobility", "TA"),
+                        config={"displayModeBar": False}),
+                ]),
+            ]),
+            html.Div(className="chart-grid-1", children=[
+                html.Div(className="chart-card", children=[
+                    html.H3("TA x Inc Group", className="chart-title"),
+                    html.P("Which Inc groups carry TA systems",
+                           className="chart-subtitle"),
+                    dcc.Graph(figure=_make_feature_inc_chart(
+                        "ta_vs_inc", "TA", "#e67e22"),
+                        config={"displayModeBar": False}),
+                ]),
+            ]),
+        ]),
+
+        # --- 7. Quaternary Ammonium Compounds ---
+        html.Div(className="correlation-section", children=[
+            html.H3(
+                f"7. QAC Resistance ({correlations.get('qac_total', 0):,} "
+                f"plasmids with QAC genes)",
+                className="correlation-heading",
+            ),
+            html.Div(className="chart-grid-2", children=[
+                html.Div(className="chart-card", children=[
+                    html.H3("QAC Resistance Genes", className="chart-title"),
+                    html.P("Quaternary ammonium compound efflux genes",
+                           className="chart-subtitle"),
+                    dcc.Graph(figure=_make_gene_frequency_chart(
+                        "qac_gene_counts", "QAC", "#1abc9c"),
+                        config={"displayModeBar": False}),
+                ]),
+                html.Div(className="chart-card", children=[
+                    html.H3("QAC x Mobility", className="chart-title"),
+                    html.P("Transfer potential of QAC-resistant plasmids",
+                           className="chart-subtitle"),
+                    dcc.Graph(figure=_make_feature_mobility_chart(
+                        "qac_vs_mobility", "QAC"),
+                        config={"displayModeBar": False}),
+                ]),
+            ]),
+            html.Div(className="chart-grid-1", children=[
+                html.Div(className="chart-card", children=[
+                    html.H3("QAC x Inc Group", className="chart-title"),
+                    html.P("Which Inc groups carry QAC resistance",
+                           className="chart-subtitle"),
+                    dcc.Graph(figure=_make_feature_inc_chart(
+                        "qac_vs_inc", "QAC", "#1abc9c"),
+                        config={"displayModeBar": False}),
+                ]),
+            ]),
+        ]),
     ])
 
 
@@ -1497,13 +1722,14 @@ def visualize_plasmid(n_clicks, accession):
         if plasmid_feat.get("gc", 0) == 0 and gb_data:
             plasmid_feat["gc"] = gb_data["metadata"].get("gc_overall", 0)
 
-        # Detect AMR genes from GenBank CDS when PLSDB has none
-        amr_from_gb = []
+        # Classify all GenBank CDS genes into functional categories
+        gene_cats = {}  # category -> list of gene names
         if gb_features:
             for f in gb_features:
                 gene = f.get("gene") or f.get("locus_tag") or ""
-                if _is_amr_gene(gene, f.get("product", "")):
-                    amr_from_gb.append(gene)
+                cat = classify_gene(gene, f.get("product", ""))
+                if cat != "CDS":
+                    gene_cats.setdefault(cat, []).append(gene)
 
         # Build the interactive circular map (Plotly figure)
         fig = make_plasmid_map(plasmid_feat, gb_features, gc_profile)
@@ -1529,24 +1755,54 @@ def visualize_plasmid(n_clicks, accession):
                     ])
                 )
 
-        # Feature summary counts
+        # Feature summary badges
         summary_items = []
         if gb_features:
             summary_items.append(f"{len(gb_features)} CDS genes")
 
+        # AMR: combine PLSDB + GenBank detected
         plsdb_amr = plasmid_feat.get("amr", [])
+        gb_amr = gene_cats.get("AMR", [])
         if plsdb_amr:
-            summary_items.append(f"{len(plsdb_amr)} AMR genes (PLSDB)")
-        if amr_from_gb:
-            label = f"{len(amr_from_gb)} AMR genes (GenBank: {', '.join(amr_from_gb)})"
-            summary_items.append(label)
-        if not plsdb_amr and not amr_from_gb:
-            summary_items.append("0 AMR genes")
+            summary_items.append(f"{len(plsdb_amr)} AMR (PLSDB)")
+        if gb_amr:
+            summary_items.append(f"{len(gb_amr)} AMR: {', '.join(gb_amr)}")
 
-        summary_items.append(f"{len(plasmid_feat.get('mob', []))} MOB elements")
-        summary_items.append(f"{len(plasmid_feat.get('bgc', []))} BGC regions")
+        # MOB: combine PLSDB + GenBank detected
+        plsdb_mob = plasmid_feat.get("mob", [])
+        gb_mob = gene_cats.get("MOB", [])
+        if plsdb_mob:
+            summary_items.append(f"{len(plsdb_mob)} MOB (PLSDB)")
+        if gb_mob:
+            summary_items.append(f"{len(gb_mob)} MOB: {', '.join(gb_mob)}")
+
+        # Toxin-Antitoxin
+        gb_ta = gene_cats.get("TA", [])
+        if gb_ta:
+            summary_items.append(f"{len(gb_ta)} TA: {', '.join(gb_ta)}")
+
+        # Virulence
+        gb_vir = gene_cats.get("VIR", [])
+        if gb_vir:
+            summary_items.append(f"{len(gb_vir)} Virulence: {', '.join(gb_vir)}")
+
+        # QAC
+        gb_qac = gene_cats.get("QAC", [])
+        if gb_qac:
+            summary_items.append(f"{len(gb_qac)} QAC: {', '.join(gb_qac)}")
+
+        # Heavy metal
+        gb_metal = gene_cats.get("Metal", [])
+        if gb_metal:
+            summary_items.append(f"{len(gb_metal)} Metal: {', '.join(gb_metal)}")
+
+        # BGC
+        plsdb_bgc = plasmid_feat.get("bgc", [])
+        if plsdb_bgc:
+            summary_items.append(f"{len(plsdb_bgc)} BGC regions")
+
         if plasmid_feat.get("pgap_count"):
-            summary_items.append(f"{plasmid_feat['pgap_count']} total annotations (PGAP)")
+            summary_items.append(f"{plasmid_feat['pgap_count']} annotations (PGAP)")
 
         # NCBI fallback notice
         ncbi_notice = []
