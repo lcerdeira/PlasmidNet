@@ -93,6 +93,6 @@ Note: Heroku has an ephemeral filesystem — the SQLite DB ships with git and is
 - NCBI GenBank as fallback for plasmid viewer (CDS + GC content)
 - Gunicorn for production serving
 
-## Data Source
+<!-- ## Data Source
 
-All data from PLSDB 2025 (Plasmid Database), version 2024_05_31_v2, maintained by the Computational Biology group at Saarland University. Plasmid viewer fetches CDS annotations and sequences from NCBI GenBank on demand.
+All data from PLSDB 2025 (Plasmid Database), version 2024_05_31_v2, maintained by the Computational Biology group at Saarland University. Plasmid viewer fetches CDS annotations and sequences from NCBI GenBank on demand. -->
