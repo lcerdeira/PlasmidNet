@@ -357,39 +357,20 @@ def build_correlations():
         for inc in plasmid_inc.get(acc, set()):
             vir_vs_inc[inc] = vir_vs_inc.get(inc, 0) + 1
 
-    # ── 4. Toxin-Antitoxin systems ─────────────────────────────────
-    # Search by gene_symbol patterns + gene_name keywords across ALL
-    # AMR entries (including those with empty drug_class = virulence)
-    ta_sql = """
-        SELECT DISTINCT NUCCORE_ACC, gene_symbol FROM amr
-        WHERE LOWER(gene_symbol) IN (
-            'rele','relb','higa','higb','mazf','maze','ccda','ccdb',
-            'pard','pare','vapb','vapc','phd','doc','yoeb','yefm',
-            'mqsr','mqsa','hipa','hipb','pema','pemk','pemi',
-            'higb-1','higa-1','relb2','rele2','vapbc','ccdab'
-        )
-        OR LOWER(gene_symbol) LIKE 'vap%'
-        OR LOWER(gene_symbol) LIKE 'ccd%'
-        OR LOWER(gene_symbol) LIKE 'pem%'
-        OR LOWER(gene_symbol) LIKE 'rel%'
-        OR LOWER(gene_symbol) LIKE 'hig%'
-        OR LOWER(gene_symbol) LIKE 'maz%'
-        OR LOWER(gene_symbol) LIKE 'par%'
-        OR LOWER(gene_name) LIKE '%toxin-antitoxin%'
-        OR LOWER(gene_name) LIKE '%antitoxin%'
-        OR LOWER(gene_name) LIKE '%addiction module%'
-        OR LOWER(gene_name) LIKE '%plasmid stabilization%'
-        OR LOWER(gene_name) LIKE '%post-segregational%'
-    """
-    ta_rows_db = q(ta_sql)
+    # ── 4. Toxin-Antitoxin systems (from pgap_features table) ──────
+    ta_rows_db = q("""
+        SELECT NUCCORE_ACC, gene FROM pgap_features
+        WHERE category = 'TA'
+    """)
     ta_from_db = {}
     for r in ta_rows_db:
-        ta_from_db.setdefault(r["NUCCORE_ACC"], []).append(r["gene_symbol"])
+        ta_from_db.setdefault(r["NUCCORE_ACC"], []).append(r["gene"])
 
     ta_gene_counts = {}
     for genes in ta_from_db.values():
         for g in genes:
-            ta_gene_counts[g] = ta_gene_counts.get(g, 0) + 1
+            if g:
+                ta_gene_counts[g] = ta_gene_counts.get(g, 0) + 1
 
     ta_vs_inc = {}
     ta_vs_mobility = {"conjugative": 0, "mobilizable": 0, "non-mobilizable": 0}
@@ -439,23 +420,42 @@ def build_correlations():
             if part and "(-)" not in part:
                 pmlst_allele_freq[part] = pmlst_allele_freq.get(part, 0) + 1
 
-    # ── 7. Transposase elements from typing_markers ─────────────────
-    # Note: phage data requires PGAP annotations (proteins.csv, 637MB)
-    # which is not included. We report MOB-associated element counts.
-    mob_element_counts = {}
-    mob_per_plasmid = {}
-    tm_rows = q("SELECT NUCCORE_ACC, element FROM typing_markers")
-    for r in tm_rows:
-        el = r["element"]
-        mob_element_counts[el] = mob_element_counts.get(el, 0) + 1
-        mob_per_plasmid.setdefault(r["NUCCORE_ACC"], set()).add(el)
+    # ── 7. Phage & transposase (from pgap_features table) ───────────
+    phage_per_plasmid = {}
+    trans_per_plasmid = {}
+    pgap_rows = q("""
+        SELECT NUCCORE_ACC, category, COUNT(*) as cnt
+        FROM pgap_features
+        WHERE category IN ('PHAGE', 'TRANSPOSASE')
+        GROUP BY NUCCORE_ACC, category
+    """)
+    for r in pgap_rows:
+        if r["category"] == "PHAGE":
+            phage_per_plasmid[r["NUCCORE_ACC"]] = r["cnt"]
+        else:
+            trans_per_plasmid[r["NUCCORE_ACC"]] = r["cnt"]
 
-    phage_bins = {}  # empty = not available
+    phage_bins = {"0": 0, "1-2": 0, "3-5": 0, "6-10": 0, ">10": 0}
+    phage_bins["0"] = total_plasmids - len(phage_per_plasmid)
+    for cnt in phage_per_plasmid.values():
+        if cnt <= 2: phage_bins["1-2"] += 1
+        elif cnt <= 5: phage_bins["3-5"] += 1
+        elif cnt <= 10: phage_bins["6-10"] += 1
+        else: phage_bins[">10"] += 1
+
+    trans_bins = {"0": 0, "1-3": 0, "4-8": 0, "9-15": 0, ">15": 0}
+    trans_bins["0"] = total_plasmids - len(trans_per_plasmid)
+    for cnt in trans_per_plasmid.values():
+        if cnt <= 3: trans_bins["1-3"] += 1
+        elif cnt <= 8: trans_bins["4-8"] += 1
+        elif cnt <= 15: trans_bins["9-15"] += 1
+        else: trans_bins[">15"] += 1
+
     phage_mob = {"conjugative": [], "mobilizable": [], "non-mobilizable": []}
-    for acc, elements in mob_per_plasmid.items():
+    for acc, cnt in phage_per_plasmid.items():
         mob = plasmid_mob.get(acc, "unknown")
         if mob in phage_mob:
-            phage_mob[mob].append(len(elements))
+            phage_mob[mob].append(cnt)
 
     phage_mob_summary = {}
     for mob, vals in phage_mob.items():
@@ -473,7 +473,7 @@ def build_correlations():
         "heavy_metal_vs_inc": hm_vs_inc,
         "heavy_metal_vs_mobility": hm_vs_mobility,
         "phage_distribution": phage_bins,
-        "transposase_distribution": {},
+        "transposase_distribution": trans_bins,
         "phage_vs_mobility": phage_mob_summary,
         "pmlst_schemes": pmlst_schemes,
         "pmlst_alleles": pmlst_allele_freq,

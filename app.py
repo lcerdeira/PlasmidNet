@@ -1370,16 +1370,21 @@ def correlations_tab():
             ]),
         ]),
 
-        # --- 3. MOB Element Density & Mobility ---
+        # --- 3. Phage & Mobile Genetic Elements ---
         html.Div(className="correlation-section", children=[
-            html.H3("3. Mobilization Element Density",
+            html.H3("3. Phage & Mobile Genetic Elements",
                      className="correlation-heading"),
-            html.Div(className="chart-grid-1", children=[
+            html.Div(className="chart-grid-2", children=[
                 html.Div(className="chart-card", children=[
-                    html.H3("MOB Elements per Plasmid x Mobility",
-                             className="chart-title"),
-                    html.P("Conjugative plasmids carry significantly more "
-                           "mobilization elements on average",
+                    html.H3("Element Distribution", className="chart-title"),
+                    html.P("Phage/prophage elements and transposases per plasmid",
+                           className="chart-subtitle"),
+                    dcc.Graph(figure=make_phage_distribution_chart(),
+                              config={"displayModeBar": False}),
+                ]),
+                html.Div(className="chart-card", children=[
+                    html.H3("Phage Elements x Mobility", className="chart-title"),
+                    html.P("Mean phage elements by mobility class",
                            className="chart-subtitle"),
                     dcc.Graph(figure=make_phage_mobility_chart(),
                               config={"displayModeBar": False}),
@@ -1456,28 +1461,36 @@ def correlations_tab():
 
         # --- 6. Toxin-Antitoxin Systems ---
         html.Div(className="correlation-section", children=[
-            html.H3("6. Toxin-Antitoxin Systems", className="correlation-heading"),
-            html.Div(className="chart-card", children=[
-                html.P(
-                    "TA system genes (vapB, ccdA/B, relE, higA/B, pemK/I, etc.) are "
-                    "annotated in PGAP/protein data, which is not included in the "
-                    "current database (proteins.csv is 637 MB). "
-                    "TA systems can be viewed per-plasmid in the Plasmid Viewer tab, "
-                    "where GenBank annotations are fetched from NCBI on demand.",
-                    className="text-muted",
-                ),
-            ]) if correlations.get("ta_total", 0) == 0 else
+            html.H3(
+                f"6. Toxin-Antitoxin Systems ({correlations.get('ta_total', 0):,} "
+                f"plasmids with TA genes)",
+                className="correlation-heading",
+            ),
             html.Div(className="chart-grid-2", children=[
                 html.Div(className="chart-card", children=[
                     html.H3("Top TA Genes", className="chart-title"),
+                    html.P("Most frequent toxin-antitoxin components (from PGAP)",
+                           className="chart-subtitle"),
                     dcc.Graph(figure=_make_gene_frequency_chart(
                         "ta_gene_counts", "TA", "#e67e22"),
                         config={"displayModeBar": False}),
                 ]),
                 html.Div(className="chart-card", children=[
                     html.H3("TA x Mobility", className="chart-title"),
+                    html.P("Mobility of plasmids carrying TA systems",
+                           className="chart-subtitle"),
                     dcc.Graph(figure=_make_feature_mobility_chart(
                         "ta_vs_mobility", "TA"),
+                        config={"displayModeBar": False}),
+                ]),
+            ]),
+            html.Div(className="chart-grid-1", children=[
+                html.Div(className="chart-card", children=[
+                    html.H3("TA x Inc Group", className="chart-title"),
+                    html.P("Which Inc groups carry TA systems",
+                           className="chart-subtitle"),
+                    dcc.Graph(figure=_make_feature_inc_chart(
+                        "ta_vs_inc", "TA", "#e67e22"),
                         config={"displayModeBar": False}),
                 ]),
             ]),

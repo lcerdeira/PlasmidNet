@@ -266,6 +266,71 @@ def main():
     conn.commit()
     print(f"  {rows:,} typing marker entries")
 
+    # ── 7. pgap_features (TA, phage, transposase from proteins.csv) ─
+    pgap_path = os.path.join(RAW_DIR, "pgap_filtered.csv")
+    if os.path.exists(pgap_path):
+        print("Loading pgap_filtered.csv ...")
+        cur.execute("""
+            CREATE TABLE pgap_features (
+                NUCCORE_ACC TEXT,
+                gene TEXT,
+                product TEXT,
+                locus_tag TEXT,
+                category TEXT,
+                start INTEGER,
+                end INTEGER,
+                strand INTEGER
+            )
+        """)
+        TA_GENES = {"rele", "relb", "higa", "higb", "mazf", "maze", "ccda", "ccdb",
+                    "pard", "pare", "vapb", "vapc", "phd", "doc", "yoeb", "yefm",
+                    "mqsr", "mqsa", "hipa", "hipb", "pema", "pemk", "pemi",
+                    "hicb", "hica", "yafq", "dina", "brna", "brnb"}
+        TA_KW = ["toxin-antitoxin", "antitoxin", "addiction module",
+                 "plasmid stabilization", "killer protein",
+                 "post-segregational", "type ii toxin"]
+        PHAGE_KW = ["phage", "prophage", "bacteriophage", "tail fiber",
+                    "capsid", "terminase", "portal protein", "baseplate",
+                    "holin", "lysozyme"]
+        with open(pgap_path, newline="") as f:
+            reader = csv.DictReader(f)
+            rows = 0
+            batch = []
+            for row in reader:
+                gene = (row.get("gene") or "").lower()
+                product = (row.get("product") or "").lower()
+                if gene in TA_GENES or any(kw in product for kw in TA_KW):
+                    cat = "TA"
+                elif any(kw in product for kw in PHAGE_KW):
+                    cat = "PHAGE"
+                else:
+                    cat = "TRANSPOSASE"
+                strand = 1
+                try:
+                    strand = int(float(row.get("strand", 1)))
+                except (ValueError, TypeError):
+                    pass
+                batch.append((
+                    row.get("NUCCORE_ACC", ""),
+                    row.get("gene") or row.get("locus_tag") or "",
+                    row.get("product", ""),
+                    row.get("locus_tag", ""),
+                    cat,
+                    _int(row.get("start")),
+                    _int(row.get("end")),
+                    strand,
+                ))
+                rows += 1
+                if len(batch) >= 10000:
+                    cur.executemany("INSERT INTO pgap_features VALUES (?,?,?,?,?,?,?,?)", batch)
+                    batch = []
+            if batch:
+                cur.executemany("INSERT INTO pgap_features VALUES (?,?,?,?,?,?,?,?)", batch)
+        conn.commit()
+        print(f"  {rows:,} PGAP feature entries")
+    else:
+        print("pgap_filtered.csv not found, skipping PGAP features")
+
     # ── Indexes ─────────────────────────────────────────────────────
     print("Creating indexes ...")
     cur.execute("CREATE INDEX idx_amr_acc ON amr(NUCCORE_ACC)")
@@ -277,11 +342,17 @@ def main():
     cur.execute("CREATE INDEX idx_nuccore_tax ON nuccore(TAXONOMY_UID)")
     cur.execute("CREATE INDEX idx_pf_acc ON plasmidfinder(NUCCORE_ACC)")
     cur.execute("CREATE INDEX idx_tm_acc ON typing_markers(NUCCORE_ACC)")
+    if os.path.exists(pgap_path):
+        cur.execute("CREATE INDEX idx_pgap_acc ON pgap_features(NUCCORE_ACC)")
+        cur.execute("CREATE INDEX idx_pgap_cat ON pgap_features(category)")
     conn.commit()
 
     # ── Stats ───────────────────────────────────────────────────────
     print("\n=== Database Summary ===")
-    for table in ["nuccore", "taxonomy", "typing", "amr", "plasmidfinder", "typing_markers"]:
+    tables = ["nuccore", "taxonomy", "typing", "amr", "plasmidfinder", "typing_markers"]
+    if os.path.exists(pgap_path):
+        tables.append("pgap_features")
+    for table in tables:
         count = cur.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
         print(f"  {table:20s} {count:>10,} rows")
 
