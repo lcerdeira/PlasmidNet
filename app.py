@@ -12,8 +12,9 @@ from dash import dcc, html, dash_table, callback, Input, Output, State
 import plotly.express as px
 import plotly.graph_objects as go
 import pandas as pd
-from data_loader import fetch_genbank_full
+from data_loader import fetch_genbank_full, _fetch_genbank_text, _parse_genbank_sequence
 import db
+import seq_analysis
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -2085,6 +2086,7 @@ TABS = html.Div(className="tabs-container", children=[
             dcc.Tab(label="Correlations", value="correlations", className="tab", selected_className="tab--selected"),
             dcc.Tab(label="Geography", value="geography", className="tab", selected_className="tab--selected"),
             dcc.Tab(label="Analytics", value="analytics", className="tab", selected_className="tab--selected"),
+            dcc.Tab(label="Seq Analysis", value="seqanalysis", className="tab", selected_className="tab--selected"),
             dcc.Tab(label="Plasmid Lookup", value="lookup", className="tab", selected_className="tab--selected"),
         ],
     ),
@@ -2758,6 +2760,48 @@ def analytics_tab():
     ])
 
 
+def seqanalysis_tab():
+    return html.Div(className="tab-content", children=[
+        html.Div(className="section-header", children=[
+            html.H2("Sequence Analysis", className="section-title"),
+            html.P("Scan a DNA sequence for restriction sites, cryptic promoters, "
+                   "RBS, codon bias, vector signatures, and engineering indicators.",
+                   className="chart-subtitle"),
+        ]),
+        html.Div(className="chart-card", children=[
+            html.H3("Input Sequence", className="chart-title"),
+            html.P("Paste a DNA sequence (FASTA or raw) or enter an NCBI accession.",
+                   className="chart-subtitle"),
+            html.Div(className="filter-row", children=[
+                dcc.Input(
+                    id="seq-accession", type="text",
+                    placeholder="NCBI accession (e.g., MH595533)",
+                    className="filter-input",
+                    style={"width": "250px"},
+                ),
+                html.Button("Fetch & Analyze", id="seq-fetch-btn",
+                            className="btn-primary"),
+                html.Span(" or ", style={"color": COLORS["text_muted"],
+                                         "margin": "0 8px"}),
+            ]),
+            dcc.Textarea(
+                id="seq-input",
+                placeholder="Paste DNA sequence here (FASTA or raw)...",
+                style={"width": "100%", "height": "120px", "marginTop": "12px",
+                       "fontFamily": "monospace", "fontSize": "0.85rem",
+                       "borderRadius": "8px", "border": "1px solid #e2ddd5",
+                       "padding": "10px", "background": "#faf7f2"},
+            ),
+            html.Button("Analyze Pasted Sequence", id="seq-paste-btn",
+                        className="btn-secondary", style={"marginTop": "10px"}),
+        ]),
+        dcc.Loading(
+            type="circle", color=COLORS["accent"],
+            children=html.Div(id="seq-results"),
+        ),
+    ])
+
+
 def lookup_tab():
     return html.Div(className="tab-content", children=[
         html.Div(className="chart-card", children=[
@@ -2846,9 +2890,160 @@ def render_tab(tab):
         return geography_tab()
     elif tab == "analytics":
         return analytics_tab()
+    elif tab == "seqanalysis":
+        return seqanalysis_tab()
     elif tab == "lookup":
         return lookup_tab()
     return overview_tab()
+
+
+@callback(
+    Output("seq-results", "children"),
+    Input("seq-fetch-btn", "n_clicks"),
+    Input("seq-paste-btn", "n_clicks"),
+    State("seq-accession", "value"),
+    State("seq-input", "value"),
+    prevent_initial_call=True,
+)
+def run_seq_analysis(fetch_clicks, paste_clicks, accession, pasted_seq):
+    ctx = dash.callback_context
+    triggered = ctx.triggered[0]["prop_id"] if ctx.triggered else ""
+
+    seq = ""
+    name = "query"
+
+    if "fetch" in triggered and accession:
+        accession = accession.strip()
+        gb_text = _fetch_genbank_text(accession)
+        if not gb_text:
+            return html.P(f"Could not fetch {accession} from NCBI.",
+                          className="text-danger")
+        seq = _parse_genbank_sequence(gb_text)
+        name = accession
+    elif "paste" in triggered and pasted_seq:
+        # Handle FASTA or raw
+        text = pasted_seq.strip()
+        if text.startswith(">"):
+            lines = text.split("\n")
+            name = lines[0][1:].strip() or "pasted"
+            seq = "".join(l.strip() for l in lines[1:] if not l.startswith(">"))
+        else:
+            seq = text
+        seq = "".join(c for c in seq.upper() if c in "ACGTN")
+    else:
+        return html.P("Enter an accession or paste a sequence.", className="text-muted")
+
+    if len(seq) < 100:
+        return html.P("Sequence too short (minimum 100 bp).", className="text-danger")
+
+    # Run analysis
+    results = seq_analysis.analyze_sequence(seq, name)
+    if "error" in results:
+        return html.P(results["error"], className="text-danger")
+
+    # Build results display
+    eng_score = results["engineering_score"]
+    eng_color = "#10b981" if eng_score < 25 else "#f59e0b" if eng_score < 50 else "#ef4444"
+    eng_label = "Natural" if eng_score < 25 else "Ambiguous" if eng_score < 50 else "Likely Engineered"
+
+    # Score card
+    score_card = html.Div(className="chart-card", style={"marginTop": "16px"}, children=[
+        html.Div(style={"display": "flex", "alignItems": "center", "gap": "20px"}, children=[
+            html.Div(style={"textAlign": "center"}, children=[
+                html.H2(f"{eng_score}", style={
+                    "fontSize": "3rem", "fontWeight": "800", "color": eng_color,
+                    "margin": "0", "lineHeight": "1"}),
+                html.P("/100", style={"color": COLORS["text_muted"], "margin": "0"}),
+                html.P(eng_label, style={
+                    "fontWeight": "600", "color": eng_color, "margin": "4px 0 0 0"}),
+            ]),
+            html.Div([
+                html.H3(f"{name} ({results['length']:,} bp, GC {results['gc_content']}%)",
+                         className="chart-title"),
+                html.Div(className="feature-badges", children=[
+                    html.Span(f"{results['restriction_density']['total_sites']} restriction sites "
+                              f"({results['restriction_density']['density_per_kb']}/kb)", className="badge"),
+                    html.Span(f"{len(results['restriction_density']['hotspots'])} RE hotspots", className="badge"),
+                    html.Span(f"{len(results['promoters'])} promoters", className="badge"),
+                    html.Span(f"{len(results['rbs_sites'])} RBS sites", className="badge"),
+                    html.Span(f"{len(results['vector_signatures'])} vector signatures", className="badge"),
+                ]),
+            ]),
+        ]),
+    ])
+
+    # Detail sections
+    sections = []
+
+    # Restriction sites
+    re_sites = results["restriction_sites"]
+    if re_sites:
+        re_df = pd.DataFrame(re_sites[:30])
+        sections.append(html.Div(className="chart-card", style={"marginTop": "12px"}, children=[
+            html.H3(f"Restriction Sites ({len(re_sites)} total)", className="chart-title"),
+            html.Table(className="analytics-table", children=[
+                html.Thead(html.Tr([html.Th("Enzyme"), html.Th("Position"), html.Th("Sequence")])),
+                html.Tbody([
+                    html.Tr([html.Td(s["enzyme"]), html.Td(f"{s['position']:,}"),
+                             html.Td(s["sequence"], style={"fontFamily": "monospace"})])
+                    for s in re_sites[:20]
+                ]),
+            ]),
+        ]))
+
+    # Vector signatures
+    if results["vector_signatures"]:
+        sections.append(html.Div(className="chart-card", style={"marginTop": "12px"}, children=[
+            html.H3("Vector Backbone Signatures Detected", className="chart-title"),
+            html.P("These sequences match known cloning vector components.",
+                   className="chart-subtitle", style={"color": "#ef4444"}),
+            html.Ul([
+                html.Li(f"{v['name']} at position {v['position']:,}")
+                for v in results["vector_signatures"]
+            ]),
+        ]))
+
+    # Promoters
+    if results["promoters"]:
+        sections.append(html.Div(className="chart-card", style={"marginTop": "12px"}, children=[
+            html.H3(f"Predicted Promoters ({len(results['promoters'])})", className="chart-title"),
+            html.Table(className="analytics-table", children=[
+                html.Thead(html.Tr([html.Th("Position"), html.Th("Strand"),
+                                     html.Th("-35"), html.Th("-10"),
+                                     html.Th("Spacer"), html.Th("Score")])),
+                html.Tbody([
+                    html.Tr([
+                        html.Td(f"{p['position']:,}"), html.Td(p["strand"]),
+                        html.Td(p["minus35"], style={"fontFamily": "monospace"}),
+                        html.Td(p["minus10"], style={"fontFamily": "monospace"}),
+                        html.Td(f"{p['spacer']} bp"), html.Td(f"{p['score']}/100"),
+                    ]) for p in results["promoters"][:10]
+                ]),
+            ]),
+        ]))
+
+    # K-mer naturalness
+    kmer = results["kmer_score"]
+    sections.append(html.Div(className="chart-card", style={"marginTop": "12px"}, children=[
+        html.H3("K-mer Naturalness Analysis", className="chart-title"),
+        html.Div(className="detail-grid", children=[
+            html.Div(className="detail-item", children=[
+                html.Span("4-mer Entropy Ratio", className="detail-label"),
+                html.Span(f"{kmer.get('entropy_ratio', 'N/A')}", className="detail-value"),
+            ]),
+            html.Div(className="detail-item", children=[
+                html.Span("Palindrome Fraction", className="detail-label"),
+                html.Span(f"{kmer.get('palindrome_fraction', 'N/A')}", className="detail-value"),
+            ]),
+            html.Div(className="detail-item", children=[
+                html.Span("K-mer Score", className="detail-label"),
+                html.Span(f"{kmer.get('score', 'N/A')}/100 ({kmer.get('note', '')})",
+                          className="detail-value"),
+            ]),
+        ]),
+    ]))
+
+    return html.Div([score_card] + sections)
 
 
 @callback(
