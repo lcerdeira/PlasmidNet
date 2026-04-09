@@ -1,6 +1,12 @@
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.19478464.svg)](https://doi.org/10.5281/zenodo.19478464)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/Python-blue.svg)](https://www.rust-lang.org/)
 ![PlasmidNet](assets/logo.png)
 
 Interactive dashboard for exploring the [PLSDB](https://ccb-microbe.cs.uni-saarland.de/plsdb2025/) plasmid database — all **72,556 plasmids** powered by a local SQLite database. No API rate limits, instant startup.
+
+
+
 
 
 ## Features

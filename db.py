@@ -73,6 +73,7 @@ def overview_stats():
         "kingdom_Bacteria": bacteria, "kingdom_Archaea": archaea,
         "total_annotations": total_amr + total_vir,
         "total_virulence_factors": total_vir,
+        "total_amr": total_amr,
         "total_bgcs": 0,
     }
 
@@ -103,6 +104,27 @@ def amr_drug_class_counts():
         ORDER BY cnt DESC
     """)
     return {r["drug_class"]: r["cnt"] for r in rows}
+
+
+def amr_genes_with_class(limit=30):
+    """Return top AMR genes with their drug class from the database."""
+    rows = q("""
+        SELECT gene_symbol, drug_class, COUNT(DISTINCT NUCCORE_ACC) AS cnt
+        FROM amr
+        WHERE gene_symbol IS NOT NULL AND gene_symbol != ''
+          AND drug_class IS NOT NULL AND drug_class != ''
+        GROUP BY gene_symbol, drug_class
+        ORDER BY cnt DESC
+        LIMIT ?
+    """, (limit * 2,))
+    # Deduplicate genes (keep highest count class)
+    seen = {}
+    for r in rows:
+        g = r["gene_symbol"]
+        if g not in seen:
+            seen[g] = {"gene": g, "drug_class": r["drug_class"], "count": r["cnt"]}
+    result = sorted(seen.values(), key=lambda x: -x["count"])[:limit]
+    return result
 
 
 def amr_gene_counts(limit=30):

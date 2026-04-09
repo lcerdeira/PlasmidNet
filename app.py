@@ -25,6 +25,7 @@ logger.info("Loading data from SQLite ...")
 overview = db.overview_stats()
 taxonomy = db.top_genera(20)
 amr = db.amr_gene_counts(30)
+amr_with_class = db.amr_genes_with_class(30)
 amr_classes = db.amr_drug_class_counts()
 mob_typing = {
     "rep_types": db.inc_group_counts(20),
@@ -149,40 +150,37 @@ def make_taxonomy_chart():
 
 
 def make_amr_chart():
-    if not amr:
+    """Bar chart of top AMR genes coloured by their real drug class from the DB."""
+    if not amr_with_class:
         return go.Figure()
-    df = pd.DataFrame(
-        sorted(amr.items(), key=lambda x: x[1], reverse=True),
-        columns=["Gene", "Plasmid Count"],
-    )
-    # Categorize by drug class
-    drug_class_map = {
-        "blaTEM": "Beta-lactams", "blaSHV": "Beta-lactams", "blaCTX-M": "Beta-lactams",
-        "blaOXA": "Beta-lactams", "blaKPC": "Carbapenems", "blaNDM": "Carbapenems",
-        "mcr-1": "Colistin", "vanA": "Glycopeptides", "vanB": "Glycopeptides",
-        "mecA": "Methicillin", "ermB": "Macrolides", "ermC": "Macrolides",
-        "tetA": "Tetracyclines", "tetB": "Tetracyclines", "tetM": "Tetracyclines",
-        "sul1": "Sulfonamides", "sul2": "Sulfonamides",
-        "aph(3')-Ia": "Aminoglycosides", "aac(6')-Ib": "Aminoglycosides",
-        "qnrS": "Quinolones", "qnrB": "Quinolones",
-        "dfrA1": "Trimethoprim", "dfrA12": "Trimethoprim",
-        "catA1": "Chloramphenicol", "floR": "Chloramphenicol",
-        "fosA": "Fosfomycin", "aadA1": "Aminoglycosides",
-        "strA": "Aminoglycosides", "strB": "Aminoglycosides",
+    df = pd.DataFrame(amr_with_class)
+    # Normalise class names for display
+    class_map = {
+        "BETA-LACTAM": "Beta-lactam", "AMINOGLYCOSIDE": "Aminoglycoside",
+        "aminoglycoside antibiotic": "Aminoglycoside",
+        "SULFONAMIDE": "Sulfonamide", "sulfonamide antibiotic": "Sulfonamide",
+        "TETRACYCLINE": "Tetracycline", "tetracycline antibiotic": "Tetracycline",
+        "QUATERNARY AMMONIUM": "QAC", "PHENICOL": "Phenicol",
+        "macrolide antibiotic": "Macrolide", "TRIMETHOPRIM": "Trimethoprim",
+        "MERCURY": "Mercury", "COPPER": "Copper", "COPPER/SILVER": "Copper/Silver",
+        "TELLURIUM": "Tellurium", "ARSENIC": "Arsenic",
+        "QUINOLONE": "Quinolone", "fluoroquinolone antibiotic": "Quinolone",
+        "FOSFOMYCIN": "Fosfomycin", "COLISTIN": "Colistin",
+        "GLYCOPEPTIDE": "Glycopeptide",
     }
-    df["Drug Class"] = df["Gene"].map(drug_class_map).fillna("Other")
+    df["Drug Class"] = df["drug_class"].map(class_map).fillna(df["drug_class"])
     fig = px.bar(
-        df, x="Gene", y="Plasmid Count", color="Drug Class",
-        color_discrete_sequence=px.colors.qualitative.Set2,
+        df, x="gene", y="count", color="Drug Class",
+        color_discrete_sequence=px.colors.qualitative.Set2 + px.colors.qualitative.Pastel,
     )
     fig.update_layout(
         template=PLOTLY_TEMPLATE, paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)", font_color=COLORS["text"],
-        margin=dict(t=10, b=10, l=10, r=10), height=400,
+        margin=dict(t=10, b=10, l=10, r=10), height=450,
         xaxis_title="", yaxis_title="Number of Plasmids",
         xaxis_tickangle=-45, legend=dict(
             orientation="h", yanchor="bottom", y=1.02,
-            xanchor="right", x=1, font_size=10,
+            xanchor="center", x=0.5, font_size=9,
         ),
     )
     return fig
@@ -1110,10 +1108,10 @@ HEADER = html.Div(className="header", children=[
 ])
 
 STATS_ROW = html.Div(className="stats-row", children=[
-    stat_card("Total Plasmids", overview.get("total", 72360), "P", COLORS["accent"]),
-    stat_card("AMR Annotations", overview.get("total_annotations", 0), "A", COLORS["accent2"]),
-    stat_card("Virulence Factors", overview.get("total_virulence_factors", 0), "V", COLORS["accent4"]),
-    stat_card("RefSeq / INSDC", f"{overview.get('source_RefSeq',0):,} / {overview.get('source_INSDC',0):,}", "S", COLORS["accent3"]),
+    stat_card("Total Plasmids", overview.get("total", 0), "P", COLORS["accent"]),
+    stat_card("AMR Annotations", overview.get("total_amr", 0), "A", COLORS["accent2"]),
+    stat_card("Virulence Annotations", overview.get("total_virulence_factors", 0), "V", COLORS["accent4"]),
+    stat_card("Total Annotations", overview.get("total_annotations", 0), "T", COLORS["accent3"]),
 ])
 
 TABS = html.Div(className="tabs-container", children=[
