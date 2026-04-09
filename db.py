@@ -912,6 +912,139 @@ def pubmed_stats():
     return {"total_with_pmid": total, "top_pmids": top}
 
 
+def integron_analysis():
+    """
+    Detect class 1 integrons and analyse gene cassette composition.
+    Class 1 signature: qacEdelta1 + sul1 (3' conserved segment).
+    """
+    # Plasmids with integron markers
+    class1_total = scalar("""
+        SELECT COUNT(DISTINCT a1.NUCCORE_ACC) FROM amr a1
+        JOIN amr a2 ON a1.NUCCORE_ACC = a2.NUCCORE_ACC
+        WHERE a1.gene_symbol = 'qacEdelta1' AND a2.gene_symbol = 'sul1'
+    """) or 0
+
+    qac_total = scalar(
+        "SELECT COUNT(DISTINCT NUCCORE_ACC) FROM amr WHERE gene_symbol='qacEdelta1'"
+    ) or 0
+
+    # Gene cassettes within 5kb of qacEdelta1
+    cassette_genes = q("""
+        SELECT a2.gene_symbol AS gene, a2.drug_class AS drug_class,
+               COUNT(DISTINCT a1.NUCCORE_ACC) AS cnt
+        FROM amr a1
+        JOIN amr a2 ON a1.NUCCORE_ACC = a2.NUCCORE_ACC
+        WHERE a1.gene_symbol = 'qacEdelta1' AND a2.gene_symbol != 'qacEdelta1'
+          AND a2.gene_symbol != '' AND a1.input_gene_start IS NOT NULL
+          AND a2.input_gene_start IS NOT NULL
+          AND ABS(CAST(a1.input_gene_start AS INT) - CAST(a2.input_gene_start AS INT)) < 5000
+        GROUP BY a2.gene_symbol ORDER BY cnt DESC LIMIT 20
+    """)
+
+    # Integron vs mobility
+    integron_mob = q("""
+        SELECT t.predicted_mobility, COUNT(DISTINCT a1.NUCCORE_ACC) AS cnt
+        FROM amr a1
+        JOIN amr a2 ON a1.NUCCORE_ACC = a2.NUCCORE_ACC
+        JOIN typing t ON a1.NUCCORE_ACC = t.NUCCORE_ACC
+        WHERE a1.gene_symbol = 'qacEdelta1' AND a2.gene_symbol = 'sul1'
+          AND t.predicted_mobility != ''
+        GROUP BY t.predicted_mobility
+    """)
+    mob_dist = {r["predicted_mobility"]: r["cnt"] for r in integron_mob}
+
+    # Integron vs Inc group
+    integron_inc = q("""
+        SELECT t.rep_type, COUNT(DISTINCT a1.NUCCORE_ACC) AS cnt
+        FROM amr a1
+        JOIN amr a2 ON a1.NUCCORE_ACC = a2.NUCCORE_ACC
+        JOIN typing t ON a1.NUCCORE_ACC = t.NUCCORE_ACC
+        WHERE a1.gene_symbol = 'qacEdelta1' AND a2.gene_symbol = 'sul1'
+          AND t.rep_type != ''
+        GROUP BY t.rep_type ORDER BY cnt DESC
+    """)
+    # Parse comma-separated rep_types
+    inc_counts = {}
+    for r in integron_inc:
+        for rt in r["rep_type"].split(","):
+            rt = rt.strip()
+            if rt:
+                inc_counts[rt] = inc_counts.get(rt, 0) + r["cnt"]
+
+    return {
+        "class1_total": class1_total,
+        "qac_total": qac_total,
+        "cassette_genes": cassette_genes,
+        "mobility": mob_dist,
+        "inc_groups": dict(sorted(inc_counts.items(), key=lambda x: -x[1])[:15]),
+    }
+
+
+def comobilization_data():
+    """
+    Get data for co-mobilization analysis: mobilizable plasmids
+    that share a host (same BIOSAMPLE_UID) with conjugative plasmids.
+    """
+    # Which Inc groups of conjugative plasmids co-exist with mobilizable ones
+    rows = q("""
+        SELECT t_conj.rep_type AS conj_inc, t_mob.rep_type AS mob_inc,
+               COUNT(*) AS cnt
+        FROM nuccore n1
+        JOIN nuccore n2 ON n1.BIOSAMPLE_UID = n2.BIOSAMPLE_UID
+                       AND n1.NUCCORE_ACC != n2.NUCCORE_ACC
+        JOIN typing t_conj ON n1.NUCCORE_ACC = t_conj.NUCCORE_ACC
+        JOIN typing t_mob ON n2.NUCCORE_ACC = t_mob.NUCCORE_ACC
+        WHERE t_conj.predicted_mobility = 'conjugative'
+          AND t_mob.predicted_mobility = 'mobilizable'
+          AND n1.BIOSAMPLE_UID > 0
+          AND t_conj.rep_type != '' AND t_mob.rep_type != ''
+        GROUP BY t_conj.rep_type, t_mob.rep_type
+        ORDER BY cnt DESC
+        LIMIT 200
+    """)
+
+    # Parse and aggregate
+    pairs = {}
+    for r in rows:
+        for c_inc in r["conj_inc"].split(","):
+            c_inc = c_inc.strip()
+            if not c_inc:
+                continue
+            for m_inc in r["mob_inc"].split(","):
+                m_inc = m_inc.strip()
+                if not m_inc:
+                    continue
+                key = (c_inc, m_inc)
+                pairs[key] = pairs.get(key, 0) + r["cnt"]
+
+    # Top pairs
+    top_pairs = sorted(pairs.items(), key=lambda x: -x[1])[:30]
+
+    # Summary: mobilizable plasmids in same host as conjugative
+    mob_with_conj = scalar("""
+        SELECT COUNT(DISTINCT n2.NUCCORE_ACC)
+        FROM nuccore n1
+        JOIN nuccore n2 ON n1.BIOSAMPLE_UID = n2.BIOSAMPLE_UID
+                       AND n1.NUCCORE_ACC != n2.NUCCORE_ACC
+        JOIN typing t1 ON n1.NUCCORE_ACC = t1.NUCCORE_ACC
+        JOIN typing t2 ON n2.NUCCORE_ACC = t2.NUCCORE_ACC
+        WHERE t1.predicted_mobility = 'conjugative'
+          AND t2.predicted_mobility = 'mobilizable'
+          AND n1.BIOSAMPLE_UID > 0
+    """) or 0
+
+    total_mob = scalar(
+        "SELECT COUNT(*) FROM typing WHERE predicted_mobility='mobilizable'"
+    ) or 1
+
+    return {
+        "mob_with_conj": mob_with_conj,
+        "total_mobilizable": total_mob,
+        "pct_colocated": round(mob_with_conj / total_mob * 100, 1),
+        "top_pairs": [(c, m, n) for (c, m), n in top_pairs],
+    }
+
+
 def amr_cooccurrence(min_count=50):
     """
     AMR gene co-occurrence: which resistance genes appear together

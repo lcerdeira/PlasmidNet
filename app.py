@@ -1831,22 +1831,85 @@ def make_amr_cooccurrence_chart():
     return fig
 
 
-def make_pubmed_chart():
-    """Bar chart of most-cited PMIDs in the database."""
-    stats = db.pubmed_stats()
-    if not stats or not stats["top_pmids"]:
+def make_integron_cassette_chart(integron_data):
+    """Bar chart of gene cassettes found near qacEdelta1."""
+    genes = integron_data.get("cassette_genes", [])
+    if not genes:
         return go.Figure()
 
-    df = pd.DataFrame(stats["top_pmids"], columns=["PMID", "Plasmids"])
-    df["PMID"] = df["PMID"].astype(str)
-    fig = px.bar(df.head(15), x="Plasmids", y="PMID", orientation="h",
-                 color_discrete_sequence=[COLORS["accent2"]])
+    # Normalize drug class names
+    class_map = {
+        "SULFONAMIDE": "Sulfonamide", "sulfonamide antibiotic": "Sulfonamide",
+        "AMINOGLYCOSIDE": "Aminoglycoside", "aminoglycoside antibiotic": "Aminoglycoside",
+        "TRIMETHOPRIM": "Trimethoprim", "diaminopyrimidine antibiotic": "Trimethoprim",
+        "BETA-LACTAM": "Beta-lactam", "PHENICOL": "Phenicol",
+        "RIFAMYCIN": "Rifamycin", "QUINOLONE": "Quinolone",
+        "fluoroquinolone antibiotic": "Quinolone",
+        "AMINOGLYCOSIDE/QUINOLONE": "Aminoglycoside/Quinolone",
+        "fluoroquinolone antibiotic; aminoglycoside antibiotic": "Aminoglycoside/Quinolone",
+        "QUATERNARY AMMONIUM": "QAC",
+    }
+    df = pd.DataFrame(genes)
+    df["drug_class"] = df["drug_class"].fillna("").map(
+        lambda x: class_map.get(x, x if x else "Other"))
+    fig = px.bar(df, x="gene", y="cnt", color="drug_class",
+                 color_discrete_sequence=px.colors.qualitative.Set2 + px.colors.qualitative.Pastel)
     fig.update_layout(
         template=PLOTLY_TEMPLATE, paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)", font_color=COLORS["text"],
-        margin=dict(t=10, b=30, l=10, r=10), height=400,
-        yaxis=dict(autorange="reversed"),
-        xaxis_title="Plasmids referencing this PMID", yaxis_title="PubMed ID",
+        margin=dict(t=10, b=10, l=10, r=10), height=400,
+        xaxis_tickangle=-45, xaxis_title="",
+        yaxis_title="Plasmids with gene within 5kb of qacEdelta1",
+        legend=dict(title="Drug Class", font_size=9),
+    )
+    return fig
+
+
+def make_integron_mobility_chart(integron_data):
+    """Donut: mobility of class 1 integron-carrying plasmids."""
+    mob = integron_data.get("mobility", {})
+    if not mob:
+        return go.Figure()
+    labels = [k.capitalize() for k in mob.keys()]
+    values = list(mob.values())
+    colors = [COLORS["accent3"], COLORS["accent"], COLORS["accent4"]]
+    fig = go.Figure(go.Pie(
+        labels=labels, values=values, hole=0.55,
+        marker_colors=colors[:len(labels)],
+        textinfo="label+percent", textfont_size=12,
+    ))
+    fig.update_layout(
+        template=PLOTLY_TEMPLATE, paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)", font_color=COLORS["text"],
+        margin=dict(t=10, b=10, l=10, r=10), height=350, showlegend=False,
+    )
+    return fig
+
+
+def make_comobilization_chart(comob_data):
+    """Heatmap: conjugative Inc x mobilizable Inc co-occurrence."""
+    pairs = comob_data.get("top_pairs", [])
+    if not pairs:
+        return go.Figure()
+
+    # Build matrix
+    conj_incs = sorted(set(c for c, m, n in pairs))[:10]
+    mob_incs = sorted(set(m for c, m, n in pairs))[:10]
+    pair_map = {(c, m): n for c, m, n in pairs}
+
+    z = [[pair_map.get((c, m), 0) for m in mob_incs] for c in conj_incs]
+    fig = go.Figure(go.Heatmap(
+        z=z, x=[f"mob:{m}" for m in mob_incs],
+        y=[f"conj:{c}" for c in conj_incs],
+        colorscale="Purples", texttemplate="%{z}", textfont={"size": 9},
+        hovertemplate="Conjugative: <b>%{y}</b><br>Mobilizable: <b>%{x}</b><br>Co-located: %{z}<extra></extra>",
+    ))
+    fig.update_layout(
+        template=PLOTLY_TEMPLATE, paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)", font_color=COLORS["text"],
+        margin=dict(t=10, b=10, l=10, r=10), height=450,
+        xaxis=dict(tickangle=-45, tickfont=dict(size=9)),
+        yaxis=dict(tickfont=dict(size=9), autorange="reversed"),
     )
     return fig
 
@@ -2559,18 +2622,11 @@ def analytics_tab():
             ]),
         ]),
 
-        # --- 7. PubMed References ---
-        html.Div(className="correlation-section", children=[
-            html.H3("7. PubMed References",
-                     className="correlation-heading"),
-            html.Div(className="chart-card", children=[
-                html.H3("Most-Referenced Publications", className="chart-title"),
-                html.P("PubMed IDs most frequently associated with plasmids in PLSDB.",
-                       className="chart-subtitle"),
-                dcc.Graph(figure=make_pubmed_chart(),
-                          config={"displayModeBar": False}),
-            ]),
-        ]),
+        # --- 7. Integron & Gene Cassette Analysis ---
+        html.Div(className="correlation-section", id="integron-section"),
+
+        # --- 8. Co-mobilization Analysis ---
+        html.Div(className="correlation-section", id="comob-section"),
     ])
 
 
@@ -2740,6 +2796,68 @@ def compute_shap(tab):
                style={"fontWeight": "600", "color": COLORS["accent"]}),
         dcc.Graph(figure=fig, config={"displayModeBar": False}),
     ])
+
+
+@callback(
+    Output("integron-section", "children"),
+    Input("main-tabs", "value"),
+    prevent_initial_call=True,
+)
+def load_integron(tab):
+    if tab != "analytics":
+        raise dash.exceptions.PreventUpdate
+    integ = db.integron_analysis()
+    return [
+        html.H3(f"7. Class 1 Integrons & Gene Cassettes "
+                 f"({integ['class1_total']:,} plasmids)",
+                 className="correlation-heading"),
+        html.Div(className="chart-grid-2", children=[
+            html.Div(className="chart-card", children=[
+                html.H3("Gene Cassettes near qacEdelta1", className="chart-title"),
+                html.P("AMR genes within 5 kb of qacEdelta1 (3' conserved segment "
+                       "of class 1 integrons). sul1 + aadA + dfrA is the classic pattern.",
+                       className="chart-subtitle"),
+                dcc.Graph(figure=make_integron_cassette_chart(integ),
+                          config={"displayModeBar": False}),
+            ]),
+            html.Div(className="chart-card", children=[
+                html.H3("Integron Mobility", className="chart-title"),
+                html.P(f"Mobility of {integ['class1_total']:,} class 1 "
+                       f"integron-carrying plasmids (qacEdelta1 + sul1)",
+                       className="chart-subtitle"),
+                dcc.Graph(figure=make_integron_mobility_chart(integ),
+                          config={"displayModeBar": False}),
+            ]),
+        ]),
+    ]
+
+
+@callback(
+    Output("comob-section", "children"),
+    Input("main-tabs", "value"),
+    prevent_initial_call=True,
+)
+def load_comobilization(tab):
+    if tab != "analytics":
+        raise dash.exceptions.PreventUpdate
+    comob = db.comobilization_data()
+    return [
+        html.H3(f"8. Co-mobilization Analysis "
+                 f"({comob['pct_colocated']}% of mobilizable plasmids "
+                 f"share a host with a conjugative plasmid)",
+                 className="correlation-heading"),
+        html.Div(className="chart-card", children=[
+            html.H3("Conjugative x Mobilizable Inc Group Pairs",
+                     className="chart-title"),
+            html.P("Heatmap showing which conjugative plasmid Inc groups "
+                   "co-exist in the same bacterial host with which mobilizable "
+                   "plasmid Inc groups. High values suggest frequent "
+                   "co-mobilization (hitchhiking on the conjugative T4SS).",
+                   className="chart-subtitle"),
+            dcc.Graph(figure=make_comobilization_chart(comob),
+                      config={"displayModeBar": False}),
+        ]),
+    ]
 
 
 @callback(
