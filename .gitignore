@@ -10,6 +10,7 @@ build/
 venv/
 env/
 data/*.json
+data/raw/
 .DS_Store
 *.log
 .vscode/
