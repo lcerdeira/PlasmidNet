@@ -959,6 +959,64 @@ def host_species_sharing():
     return rows
 
 
+# ── Data export ────────────────────────────────────────────────────
+
+EXPORT_QUERIES = {
+    "all_plasmids": (
+        "All Plasmids (PLSDB)",
+        """SELECT n.NUCCORE_ACC, n.NUCCORE_Description, n.NUCCORE_Length,
+                  n.NUCCORE_GC, n.NUCCORE_Topology, n.NUCCORE_CreateDate, n.NUCCORE_Source,
+                  t.TAXONOMY_genus, t.TAXONOMY_species
+           FROM nuccore n
+           LEFT JOIN taxonomy t ON n.TAXONOMY_UID = t.TAXONOMY_UID""",
+    ),
+    "typing": (
+        "MOB Typing & Inc Groups",
+        """SELECT NUCCORE_ACC, rep_type, relaxase_type, mpf_type, orit_type,
+                  predicted_mobility, predicted_host_range_overall_name,
+                  PMLST_scheme, PMLST_alleles
+           FROM typing""",
+    ),
+    "amr": (
+        "AMR Annotations",
+        """SELECT NUCCORE_ACC, gene_symbol, gene_name, drug_class,
+                  antimicrobial_agent, input_gene_start, input_gene_stop,
+                  strand_orientation, sequence_identity, coverage_percentage
+           FROM amr""",
+    ),
+    "geography": (
+        "Geographic Data",
+        """SELECT n.NUCCORE_ACC, b.country, b.lat, b.lng,
+                  b.host_category, b.ecosystem,
+                  t.predicted_mobility, t.rep_type
+           FROM nuccore n
+           JOIN biosample_location b ON n.BIOSAMPLE_UID = b.BIOSAMPLE_UID
+           JOIN typing t ON n.NUCCORE_ACC = t.NUCCORE_ACC
+           WHERE b.country != ''""",
+    ),
+    "ncbi_extra": (
+        "NCBI Extra Plasmids",
+        "SELECT * FROM ncbi_extra",
+    ),
+}
+
+
+def export_csv(dataset_key):
+    """Export a dataset as CSV string."""
+    import io, csv as csv_mod
+    if dataset_key not in EXPORT_QUERIES:
+        return None
+    _, sql = EXPORT_QUERIES[dataset_key]
+    rows = q(sql)
+    if not rows:
+        return None
+    output = io.StringIO()
+    writer = csv_mod.DictWriter(output, fieldnames=rows[0].keys())
+    writer.writeheader()
+    writer.writerows(rows)
+    return output.getvalue()
+
+
 # ── Plasmid viewer lookup ──────────────────────────────────────────
 
 def plasmid_summary(accession):

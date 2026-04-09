@@ -358,6 +358,31 @@ body {
     margin: 0;
 }
 
+/* --- Download Bar --- */
+.download-bar {
+    background: #f0ebe3;
+    border-top: 1px solid #e2ddd5;
+    padding: 12px 32px;
+}
+
+.download-bar-inner {
+    max-width: 1400px;
+    margin: 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.download-label {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: #1e293b;
+}
+
+.download-dropdown {
+    font-size: 0.85rem;
+}
+
 .footer a {
     color: #0d9488;
     text-decoration: none;

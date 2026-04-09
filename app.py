@@ -2600,6 +2600,24 @@ FOOTER = html.Div(className="footer", children=[
     ]),
 ])
 
+DOWNLOAD_BAR = html.Div(className="download-bar", children=[
+    html.Div(className="download-bar-inner", children=[
+        html.Span("Export Data:", className="download-label"),
+        dcc.Dropdown(
+            id="download-dataset",
+            options=[{"label": label, "value": key}
+                     for key, (label, _) in db.EXPORT_QUERIES.items()],
+            value=None,
+            placeholder="Select dataset...",
+            className="download-dropdown",
+            style={"width": "250px"},
+        ),
+        html.Button("Download CSV", id="download-btn", className="btn-secondary",
+                     style={"marginLeft": "8px"}),
+        dcc.Download(id="download-csv"),
+    ]),
+])
+
 app.layout = html.Div(className="app-container", children=[
     HEADER,
     html.Div(className="main-content", children=[
@@ -2607,6 +2625,7 @@ app.layout = html.Div(className="app-container", children=[
         TABS,
         html.Div(id="tab-content"),
     ]),
+    DOWNLOAD_BAR,
     FOOTER,
 ])
 
@@ -2679,6 +2698,21 @@ def search_taxonomy(n_clicks, genus, species):
             return html.P(f"No plasmids found for {search_term}.", className="text-muted")
     except Exception as e:
         return html.P(f"Error: {str(e)}", className="text-danger")
+
+
+@callback(
+    Output("download-csv", "data"),
+    Input("download-btn", "n_clicks"),
+    State("download-dataset", "value"),
+    prevent_initial_call=True,
+)
+def download_data(n_clicks, dataset):
+    if not n_clicks or not dataset:
+        raise dash.exceptions.PreventUpdate
+    csv_str = db.export_csv(dataset)
+    if not csv_str:
+        raise dash.exceptions.PreventUpdate
+    return dcc.send_string(csv_str, filename=f"plasmidnet_{dataset}.csv")
 
 
 @callback(
