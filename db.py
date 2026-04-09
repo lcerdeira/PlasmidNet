@@ -707,6 +707,192 @@ def host_vs_amr_class():
     return result
 
 
+# ── Analytics queries ──────────────────────────────────────────────
+
+TOP_COUNTRIES = ("China", "USA", "United Kingdom", "South Korea", "Japan",
+                 "Germany", "Australia", "Canada", "France", "Spain")
+TOP_GENERA = ("Escherichia", "Klebsiella", "Salmonella", "Staphylococcus",
+              "Acinetobacter", "Enterococcus")
+
+
+def analytics_matched_comparison():
+    """
+    Matched comparison: mobility ratios within same species across countries.
+    Controls for species confound.
+    """
+    ph = ",".join("?" * len(TOP_COUNTRIES))
+    pg = ",".join("?" * len(TOP_GENERA))
+    rows = q(f"""
+        SELECT tx.TAXONOMY_genus AS genus, b.country,
+               t.predicted_mobility AS mobility, COUNT(*) AS cnt
+        FROM nuccore n
+        JOIN biosample_location b ON n.BIOSAMPLE_UID = b.BIOSAMPLE_UID
+        JOIN typing t ON n.NUCCORE_ACC = t.NUCCORE_ACC
+        JOIN taxonomy tx ON n.TAXONOMY_UID = tx.TAXONOMY_UID
+        WHERE b.country IN ({ph})
+          AND tx.TAXONOMY_genus IN ({pg})
+          AND t.predicted_mobility != ''
+        GROUP BY tx.TAXONOMY_genus, b.country, t.predicted_mobility
+    """, TOP_COUNTRIES + TOP_GENERA)
+    return rows
+
+
+def analytics_rarefaction(n_iter=50, sample_sizes=None):
+    """
+    Rarefaction: subsample each country to equal n and compute
+    conjugative fraction. Returns data for rarefaction curves.
+    """
+    import random
+    random.seed(42)
+
+    if sample_sizes is None:
+        sample_sizes = [50, 100, 200, 500, 1000, 2000]
+
+    ph = ",".join("?" * len(TOP_COUNTRIES))
+    rows = q(f"""
+        SELECT b.country, t.predicted_mobility
+        FROM nuccore n
+        JOIN biosample_location b ON n.BIOSAMPLE_UID = b.BIOSAMPLE_UID
+        JOIN typing t ON n.NUCCORE_ACC = t.NUCCORE_ACC
+        WHERE b.country IN ({ph}) AND t.predicted_mobility != ''
+    """, TOP_COUNTRIES)
+
+    # Group by country
+    country_data = {}
+    for r in rows:
+        country_data.setdefault(r["country"], []).append(r["predicted_mobility"])
+
+    results = []
+    for country, mobilities in country_data.items():
+        total = len(mobilities)
+        for n in sample_sizes:
+            if n > total:
+                continue
+            fractions = []
+            for _ in range(n_iter):
+                sample = random.sample(mobilities, n)
+                conj = sum(1 for m in sample if m == "conjugative")
+                fractions.append(conj / n)
+            mean_frac = sum(fractions) / len(fractions)
+            std_frac = (sum((f - mean_frac) ** 2 for f in fractions) / len(fractions)) ** 0.5
+            results.append({
+                "country": country, "n": n, "total": total,
+                "conj_mean": round(mean_frac, 4),
+                "conj_std": round(std_frac, 4),
+            })
+    return results
+
+
+def analytics_feature_matrix():
+    """
+    Build feature matrix for ML: one row per plasmid with
+    country, genus, host_category, year, length, gc, mobility.
+    """
+    rows = q("""
+        SELECT n.NUCCORE_ACC,
+               b.country, b.host_category,
+               tx.TAXONOMY_genus AS genus,
+               SUBSTR(n.NUCCORE_CreateDate, 1, 4) AS year,
+               n.NUCCORE_Length AS length,
+               n.NUCCORE_GC AS gc,
+               t.predicted_mobility AS mobility,
+               t.rep_type
+        FROM nuccore n
+        JOIN biosample_location b ON n.BIOSAMPLE_UID = b.BIOSAMPLE_UID
+        JOIN typing t ON n.NUCCORE_ACC = t.NUCCORE_ACC
+        JOIN taxonomy tx ON n.TAXONOMY_UID = tx.TAXONOMY_UID
+        WHERE b.country != '' AND t.predicted_mobility != ''
+          AND tx.TAXONOMY_genus != ''
+          AND LENGTH(n.NUCCORE_CreateDate) >= 4
+          AND n.NUCCORE_Length > 0
+    """)
+    return rows
+
+
+def analytics_simpson_paradox():
+    """
+    Detect Simpson's paradox: cases where the mobility ratio for an
+    Inc group flips direction when stratifying by species.
+
+    Returns list of {inc_group, overall_conj_pct, species_conj_pcts}.
+    """
+    ph = ",".join("?" * len(TOP_COUNTRIES))
+    rows = q(f"""
+        SELECT t.rep_type, tx.TAXONOMY_genus AS genus,
+               t.predicted_mobility AS mobility, COUNT(*) AS cnt
+        FROM nuccore n
+        JOIN biosample_location b ON n.BIOSAMPLE_UID = b.BIOSAMPLE_UID
+        JOIN typing t ON n.NUCCORE_ACC = t.NUCCORE_ACC
+        JOIN taxonomy tx ON n.TAXONOMY_UID = tx.TAXONOMY_UID
+        WHERE b.country IN ({ph}) AND t.rep_type != ''
+          AND t.predicted_mobility IN ('conjugative', 'non-mobilizable')
+          AND tx.TAXONOMY_genus IN ('Escherichia', 'Klebsiella', 'Salmonella',
+                                    'Staphylococcus', 'Acinetobacter', 'Enterococcus')
+        GROUP BY t.rep_type, tx.TAXONOMY_genus, t.predicted_mobility
+    """, TOP_COUNTRIES)
+
+    # Parse comma-separated rep_types and aggregate
+    inc_genus_mob = {}  # (inc, genus) -> {conj: n, non: n}
+    for r in rows:
+        for rt in r["rep_type"].split(","):
+            rt = rt.strip()
+            if not rt:
+                continue
+            key = (rt, r["genus"])
+            inc_genus_mob.setdefault(key, {"conjugative": 0, "non-mobilizable": 0})
+            inc_genus_mob[key][r["mobility"]] += r["cnt"]
+
+    # Find Inc groups where overall % conj differs from species-level
+    inc_overall = {}
+    for (inc, genus), mobs in inc_genus_mob.items():
+        inc_overall.setdefault(inc, {"conjugative": 0, "non-mobilizable": 0})
+        inc_overall[inc]["conjugative"] += mobs["conjugative"]
+        inc_overall[inc]["non-mobilizable"] += mobs["non-mobilizable"]
+
+    paradoxes = []
+    for inc, overall in inc_overall.items():
+        total = overall["conjugative"] + overall["non-mobilizable"]
+        if total < 50:
+            continue
+        overall_pct = overall["conjugative"] / total
+
+        # Per-species
+        species_pcts = {}
+        for (i, genus), mobs in inc_genus_mob.items():
+            if i != inc:
+                continue
+            sp_total = mobs["conjugative"] + mobs["non-mobilizable"]
+            if sp_total < 10:
+                continue
+            species_pcts[genus] = mobs["conjugative"] / sp_total
+
+        if not species_pcts:
+            continue
+
+        # Check for paradox or large species-level divergence
+        above = sum(1 for p in species_pcts.values() if p > 0.5)
+        below = len(species_pcts) - above
+        is_paradox = ((overall_pct > 0.5 and below > above) or
+                      (overall_pct < 0.5 and above > below))
+
+        # Also flag if species differ by >20 percentage points
+        vals = list(species_pcts.values())
+        max_spread = max(vals) - min(vals) if len(vals) >= 2 else 0
+
+        if is_paradox or max_spread > 0.20:
+            paradoxes.append({
+                "inc_group": inc,
+                "overall_conj_pct": round(overall_pct * 100, 1),
+                "total": total,
+                "species": {k: round(v * 100, 1) for k, v in
+                            sorted(species_pcts.items(), key=lambda x: -x[1])},
+                "paradox": is_paradox,
+                "spread": round(max_spread * 100, 1),
+            })
+
+    return sorted(paradoxes, key=lambda x: -x["spread"])[:15]
+
+
 # ── Plasmid viewer lookup ──────────────────────────────────────────
 
 def plasmid_summary(accession):

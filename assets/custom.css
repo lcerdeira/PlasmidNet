@@ -520,6 +520,33 @@ body {
     margin-bottom: 28px;
 }
 
+/* --- Analytics Table --- */
+.analytics-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 12px;
+    font-size: 0.9rem;
+}
+
+.analytics-table th {
+    background: #f0ebe3;
+    color: #1e293b;
+    font-weight: 600;
+    padding: 10px 14px;
+    text-align: left;
+    border-bottom: 2px solid #e2ddd5;
+}
+
+.analytics-table td {
+    padding: 8px 14px;
+    border-bottom: 1px solid #e2ddd5;
+    color: #1e293b;
+}
+
+.analytics-table tr:hover td {
+    background: #faf7f2;
+}
+
 .correlation-heading {
     font-size: 1.05rem;
     font-weight: 600;

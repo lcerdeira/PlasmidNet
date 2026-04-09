@@ -1416,6 +1416,192 @@ def make_host_amr_heatmap():
 
 
 # ---------------------------------------------------------------------------
+# Analytics charts
+# ---------------------------------------------------------------------------
+
+def make_matched_comparison():
+    """Heatmap: conjugative % per species x country (matched comparison)."""
+    rows = db.analytics_matched_comparison()
+    if not rows:
+        return go.Figure()
+
+    from collections import defaultdict
+    data = defaultdict(lambda: defaultdict(lambda: {"conj": 0, "total": 0}))
+    for r in rows:
+        d = data[r["genus"]][r["country"]]
+        d["total"] += r["cnt"]
+        if r["mobility"] == "conjugative":
+            d["conj"] += r["cnt"]
+
+    genera = sorted(data.keys())
+    countries = sorted({c for g in data.values() for c in g.keys()},
+                       key=lambda c: -sum(data[g][c]["total"] for g in genera))
+
+    z = []
+    text = []
+    for genus in genera:
+        row_z = []
+        row_t = []
+        for country in countries:
+            d = data[genus][country]
+            if d["total"] >= 10:
+                pct = d["conj"] / d["total"] * 100
+                row_z.append(round(pct, 1))
+                row_t.append(f"{pct:.0f}%<br>n={d['total']}")
+            else:
+                row_z.append(None)
+                row_t.append("")
+        z.append(row_z)
+        text.append(row_t)
+
+    fig = go.Figure(go.Heatmap(
+        z=z, x=countries, y=genera,
+        colorscale="RdYlGn", zmid=50,
+        text=text, texttemplate="%{text}", textfont={"size": 9},
+        hovertemplate="<b>%{y}</b> in %{x}<br>Conjugative: %{z:.1f}%<extra></extra>",
+        colorbar=dict(title="% Conjugative"),
+    ))
+    fig.update_layout(
+        template=PLOTLY_TEMPLATE, paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)", font_color=COLORS["text"],
+        margin=dict(t=10, b=10, l=10, r=10), height=400,
+        xaxis=dict(tickangle=-45), yaxis=dict(autorange="reversed"),
+    )
+    return fig
+
+
+def make_rarefaction_chart():
+    """Rarefaction curves: conjugative fraction vs sample size per country."""
+    results = db.analytics_rarefaction(n_iter=50)
+    if not results:
+        return go.Figure()
+
+    df = pd.DataFrame(results)
+    fig = go.Figure()
+    colors = px.colors.qualitative.Set2 + px.colors.qualitative.Pastel
+    for i, country in enumerate(df["country"].unique()):
+        cdf = df[df["country"] == country].sort_values("n")
+        fig.add_trace(go.Scatter(
+            x=cdf["n"], y=cdf["conj_mean"],
+            mode="lines+markers", name=country,
+            line=dict(color=colors[i % len(colors)]),
+            error_y=dict(type="data", array=cdf["conj_std"].tolist(),
+                         visible=True, thickness=1),
+            hovertemplate=(f"<b>{country}</b><br>"
+                           "n=%{x}<br>Conjugative: %{y:.1%}<extra></extra>"),
+        ))
+
+    fig.update_layout(
+        template=PLOTLY_TEMPLATE, paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)", font_color=COLORS["text"],
+        margin=dict(t=10, b=10, l=10, r=10), height=450,
+        xaxis_title="Sample size (n)", yaxis_title="Conjugative fraction",
+        yaxis=dict(tickformat=".0%"),
+        legend=dict(font_size=10),
+    )
+    return fig
+
+
+def make_feature_importance_chart():
+    """Random Forest feature importance for predicting mobility."""
+    from sklearn.ensemble import RandomForestClassifier
+    from sklearn.preprocessing import LabelEncoder
+    import numpy as np
+
+    rows = db.analytics_feature_matrix()
+    if not rows or len(rows) < 100:
+        return go.Figure()
+
+    df = pd.DataFrame(rows)
+
+    # Encode categoricals
+    features = ["country", "genus", "host_category", "year", "length", "gc"]
+    encoders = {}
+    X_data = {}
+    for col in ["country", "genus", "host_category", "year"]:
+        le = LabelEncoder()
+        X_data[col] = le.fit_transform(df[col].fillna("Unknown"))
+        encoders[col] = le
+    X_data["length"] = df["length"].fillna(0).values.astype(float)
+    X_data["gc"] = df["gc"].fillna(0).values.astype(float)
+
+    # Add Inc group features (top 10)
+    top_inc = ["IncFIB", "IncFII", "IncFIA", "IncI1", "IncN",
+               "IncHI2", "IncC", "IncX4", "ColRNAI", "IncR"]
+    for inc in top_inc:
+        X_data[f"has_{inc}"] = df["rep_type"].fillna("").str.contains(inc).astype(int).values
+        features.append(f"has_{inc}")
+
+    X = pd.DataFrame(X_data)[features]
+    y = LabelEncoder().fit_transform(df["mobility"])
+
+    # Train Random Forest
+    rf = RandomForestClassifier(n_estimators=100, max_depth=10,
+                                random_state=42, n_jobs=-1)
+    rf.fit(X, y)
+    importances = rf.feature_importances_
+
+    # Clean feature names for display
+    display_names = []
+    for f in features:
+        if f.startswith("has_"):
+            display_names.append(f[4:])
+        else:
+            display_names.append(f.capitalize())
+
+    imp_df = pd.DataFrame({
+        "Feature": display_names,
+        "Importance": importances,
+    }).sort_values("Importance", ascending=True)
+
+    fig = px.bar(imp_df, x="Importance", y="Feature", orientation="h",
+                 color="Importance", color_continuous_scale="Viridis")
+    fig.update_layout(
+        template=PLOTLY_TEMPLATE, paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)", font_color=COLORS["text"],
+        margin=dict(t=10, b=30, l=10, r=10), height=500,
+        coloraxis_showscale=False,
+        xaxis_title="Feature Importance (Gini)", yaxis_title="",
+    )
+    return fig
+
+
+def make_simpson_paradox_table():
+    """Table showing Simpson's paradox and high species-divergence cases."""
+    paradoxes = db.analytics_simpson_paradox()
+    if not paradoxes:
+        return html.P("No significant species-level divergence detected. "
+                      "Regional mobility differences are consistent across species.",
+                      className="text-muted")
+
+    rows = []
+    for p in paradoxes:
+        species_detail = ", ".join(
+            f"{sp}: {pct}%" for sp, pct in list(p["species"].items())[:4]
+        )
+        flag = "PARADOX" if p.get("paradox") else f"{p.get('spread', 0)}pp spread"
+        rows.append(html.Tr([
+            html.Td(p["inc_group"]),
+            html.Td(f"{p['overall_conj_pct']}%"),
+            html.Td(f"{p['total']:,}"),
+            html.Td(flag, style={"color": "#e74c3c" if p.get("paradox") else "#f39c12",
+                                 "fontWeight": "600"}),
+            html.Td(species_detail, style={"fontSize": "0.85rem"}),
+        ]))
+
+    return html.Table(className="analytics-table", children=[
+        html.Thead(html.Tr([
+            html.Th("Inc Group"),
+            html.Th("Overall % Conj."),
+            html.Th("n"),
+            html.Th("Status"),
+            html.Th("Per-species % Conjugative"),
+        ])),
+        html.Tbody(rows),
+    ])
+
+
+# ---------------------------------------------------------------------------
 # Layout
 # ---------------------------------------------------------------------------
 
@@ -1457,6 +1643,7 @@ TABS = html.Div(className="tabs-container", children=[
             dcc.Tab(label="Inc Groups & Mobility", value="mobility", className="tab", selected_className="tab--selected"),
             dcc.Tab(label="Correlations", value="correlations", className="tab", selected_className="tab--selected"),
             dcc.Tab(label="Geography", value="geography", className="tab", selected_className="tab--selected"),
+            dcc.Tab(label="Analytics", value="analytics", className="tab", selected_className="tab--selected"),
             dcc.Tab(label="Plasmid Lookup", value="lookup", className="tab", selected_className="tab--selected"),
         ],
     ),
@@ -1999,6 +2186,81 @@ def geography_tab():
     ])
 
 
+def analytics_tab():
+    return html.Div(className="tab-content", children=[
+        html.Div(className="section-header", children=[
+            html.H2("Statistical Analytics", className="section-title"),
+            html.P("Confound decomposition: are regional mobility differences "
+                   "biological or sampling bias?",
+                   className="chart-subtitle"),
+        ]),
+
+        # --- 1. Matched comparison ---
+        html.Div(className="correlation-section", children=[
+            html.H3("1. Matched Comparison (Species-Controlled)",
+                     className="correlation-heading"),
+            html.Div(className="chart-card", children=[
+                html.H3("Conjugative % by Species x Country", className="chart-title"),
+                html.P("Each cell shows the conjugative fraction for a single species "
+                       "in a single country. Green = more conjugative, red = less. "
+                       "If regional differences persist within the same species, "
+                       "the effect is not purely a species-composition artifact.",
+                       className="chart-subtitle"),
+                dcc.Graph(figure=make_matched_comparison(),
+                          config={"displayModeBar": False}),
+            ]),
+        ]),
+
+        # --- 2. Rarefaction ---
+        html.Div(className="correlation-section", children=[
+            html.H3("2. Rarefaction Analysis (Sample Size Effect)",
+                     className="correlation-heading"),
+            html.Div(className="chart-card", children=[
+                html.H3("Conjugative Fraction vs Sample Size",
+                         className="chart-title"),
+                html.P("Each country is subsampled to equal n (50x bootstrap). "
+                       "Error bars show standard deviation. If curves converge, "
+                       "the differences are real. If they diverge, they may be noise. "
+                       "Wide error bars at small n indicate insufficient data.",
+                       className="chart-subtitle"),
+                dcc.Graph(figure=make_rarefaction_chart(),
+                          config={"displayModeBar": False}),
+            ]),
+        ]),
+
+        # --- 3. Feature importance ---
+        html.Div(className="correlation-section", children=[
+            html.H3("3. ML Feature Importance (Random Forest)",
+                     className="correlation-heading"),
+            html.Div(className="chart-card", children=[
+                html.H3("What Predicts Mobility?", className="chart-title"),
+                html.P("Random Forest trained on 57K plasmids to predict mobility "
+                       "from country, genus, host source, year, length, GC%, and "
+                       "Inc groups. If 'Country' ranks high, regional differences "
+                       "are not fully explained by other features.",
+                       className="chart-subtitle"),
+                dcc.Graph(figure=make_feature_importance_chart(),
+                          config={"displayModeBar": False}),
+            ]),
+        ]),
+
+        # --- 4. Simpson's paradox ---
+        html.Div(className="correlation-section", children=[
+            html.H3("4. Simpson's Paradox Detector",
+                     className="correlation-heading"),
+            html.Div(className="chart-card", children=[
+                html.H3("Inc Groups Where Overall Trend Reverses by Species",
+                         className="chart-title"),
+                html.P("Cases where an Inc group appears mostly conjugative overall, "
+                       "but is mostly non-mobilizable within individual species "
+                       "(or vice versa). This reveals confounding by species composition.",
+                       className="chart-subtitle"),
+                make_simpson_paradox_table(),
+            ]),
+        ]),
+    ])
+
+
 def lookup_tab():
     return html.Div(className="tab-content", children=[
         html.Div(className="chart-card", children=[
@@ -2066,6 +2328,8 @@ def render_tab(tab):
         return correlations_tab()
     elif tab == "geography":
         return geography_tab()
+    elif tab == "analytics":
+        return analytics_tab()
     elif tab == "lookup":
         return lookup_tab()
     return overview_tab()
