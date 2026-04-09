@@ -16,6 +16,11 @@ _conn = None
 def get_conn():
     global _conn
     if _conn is None:
+        if not os.path.exists(DB_PATH):
+            raise FileNotFoundError(
+                f"Database not found at {DB_PATH}. "
+                "Run 'python build_db.py' to build it from PLSDB CSV files."
+            )
         _conn = sqlite3.connect(DB_PATH, check_same_thread=False)
         _conn.row_factory = sqlite3.Row
         _conn.execute("PRAGMA cache_size = -64000")  # 64 MB cache
