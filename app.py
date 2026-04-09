@@ -33,7 +33,17 @@ mob_typing = {
     "mpf_types": db.mpf_counts(),
     "mobility": db.mobility_distribution(),
 }
-correlations = db.build_correlations()
+import json as _json
+_corr_cache = os.path.join(os.path.dirname(__file__), "data", "correlations_cache.json")
+if os.path.exists(_corr_cache):
+    with open(_corr_cache) as _f:
+        correlations = _json.load(_f)
+    logger.info("Loaded correlations from cache")
+else:
+    correlations = db.build_correlations()
+    with open(_corr_cache, "w") as _f:
+        _json.dump(correlations, _f)
+    logger.info("Built and cached correlations")
 temporal = db.temporal_distribution()
 gc_dist = db.gc_distribution()
 length_dist = db.length_distribution()

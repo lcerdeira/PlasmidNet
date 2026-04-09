@@ -123,7 +123,8 @@ def main():
             predicted_host_range_overall_rank TEXT,
             PMLST_scheme      TEXT,
             PMLST_sequence_type TEXT,
-            PMLST_alleles     TEXT
+            PMLST_alleles     TEXT,
+            associated_pmid   TEXT
         )
     """)
     with open(os.path.join(RAW_DIR, "typing.csv"), newline="") as f:
@@ -132,7 +133,7 @@ def main():
         for row in reader:
             try:
                 cur.execute("""
-                    INSERT OR IGNORE INTO typing VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                    INSERT OR IGNORE INTO typing VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
                 """, (
                     row.get("NUCCORE_ACC", ""),
                     row.get("rep_type(s)", ""),
@@ -145,6 +146,7 @@ def main():
                     row.get("PMLST_scheme", ""),
                     row.get("PMLST_sequence_type", ""),
                     row.get("PMLST_alleles", ""),
+                    row.get("associated_pmid(s)", ""),
                 ))
                 rows += 1
             except Exception:

@@ -57,6 +57,16 @@ python ncbi_harvest.py || echo "       NCBI harvest failed (non-fatal)"
 echo "       Building SQLite database..."
 python build_db.py
 
+# Pre-build correlations cache (avoid 271MB memory spike at startup)
+echo "       Pre-building correlations cache..."
+python -c "
+import db, json
+corr = db.build_correlations()
+with open('data/correlations_cache.json', 'w') as f:
+    json.dump(corr, f)
+print(f'  Cached correlations: {corr[\"sample_size\"]:,} plasmids')
+"
+
 # Clean up raw files to save slug space
 rm -rf data/raw
 

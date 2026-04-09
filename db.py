@@ -897,9 +897,11 @@ def analytics_simpson_paradox():
 
 def pubmed_stats():
     """Count plasmids with associated PMIDs and top cited PMIDs."""
-    total = scalar("SELECT COUNT(*) FROM typing WHERE associated_pmid != ''") or 0
-    # Top PMIDs by frequency
-    rows = q("SELECT associated_pmid FROM typing WHERE associated_pmid != ''")
+    try:
+        total = scalar("SELECT COUNT(*) FROM typing WHERE associated_pmid != ''") or 0
+        rows = q("SELECT associated_pmid FROM typing WHERE associated_pmid != ''")
+    except Exception:
+        return {"total_with_pmid": 0, "top_pmids": []}
     pmid_counts = {}
     for r in rows:
         for pmid in r["associated_pmid"].split(";"):
