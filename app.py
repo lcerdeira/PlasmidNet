@@ -24,7 +24,8 @@ logger = logging.getLogger(__name__)
 logger.info("Loading data from SQLite ...")
 overview = db.overview_stats()
 taxonomy = db.top_genera(20)
-amr = db.amr_drug_class_counts()
+amr = db.amr_gene_counts(30)
+amr_classes = db.amr_drug_class_counts()
 mob_typing = {
     "rep_types": db.inc_group_counts(20),
     "relaxase_types": db.relaxase_counts(),
@@ -263,30 +264,15 @@ def make_kingdom_chart():
 
 
 def make_drug_class_summary():
-    """Aggregate AMR genes by drug class."""
-    if not amr:
+    """Bar chart of AMR drug class distribution from full database."""
+    if not amr_classes:
         return go.Figure()
-    drug_class_map = {
-        "blaTEM": "Beta-lactams", "blaSHV": "Beta-lactams", "blaCTX-M": "Beta-lactams",
-        "blaOXA": "Beta-lactams", "blaKPC": "Carbapenems", "blaNDM": "Carbapenems",
-        "mcr-1": "Colistin", "vanA": "Glycopeptides", "vanB": "Glycopeptides",
-        "mecA": "Methicillin", "ermB": "Macrolides", "ermC": "Macrolides",
-        "tetA": "Tetracyclines", "tetB": "Tetracyclines", "tetM": "Tetracyclines",
-        "sul1": "Sulfonamides", "sul2": "Sulfonamides",
-        "aph(3')-Ia": "Aminoglycosides", "aac(6')-Ib": "Aminoglycosides",
-        "qnrS": "Quinolones", "qnrB": "Quinolones",
-        "dfrA1": "Trimethoprim", "dfrA12": "Trimethoprim",
-        "catA1": "Chloramphenicol", "floR": "Chloramphenicol",
-        "fosA": "Fosfomycin", "aadA1": "Aminoglycosides",
-        "strA": "Aminoglycosides", "strB": "Aminoglycosides",
-    }
-    class_totals = {}
-    for gene, count in amr.items():
-        cls = drug_class_map.get(gene, "Other")
-        class_totals[cls] = class_totals.get(cls, 0) + count
-
+    # Filter out empty class, heavy metals (shown elsewhere), take top 20
+    skip = {"", "COPPER", "COPPER/SILVER", "MERCURY", "SILVER",
+            "TELLURIUM", "ARSENIC", "ZINC", "LEAD", "CADMIUM", "CHROMIUM"}
+    filtered = {k: v for k, v in amr_classes.items() if k.upper() not in skip}
     df = pd.DataFrame(
-        sorted(class_totals.items(), key=lambda x: x[1], reverse=True),
+        sorted(filtered.items(), key=lambda x: x[1], reverse=True)[:20],
         columns=["Drug Class", "Plasmid Count"],
     )
     fig = px.bar(
@@ -296,9 +282,9 @@ def make_drug_class_summary():
     fig.update_layout(
         template=PLOTLY_TEMPLATE, paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)", font_color=COLORS["text"],
-        margin=dict(t=10, b=30, l=10, r=10), height=400,
+        margin=dict(t=10, b=30, l=10, r=10), height=500,
         yaxis=dict(autorange="reversed"), showlegend=False,
-        xaxis_title="Total Plasmids with Resistance", yaxis_title="",
+        xaxis_title="Plasmids with Resistance", yaxis_title="",
     )
     return fig
 
@@ -1125,9 +1111,9 @@ HEADER = html.Div(className="header", children=[
 
 STATS_ROW = html.Div(className="stats-row", children=[
     stat_card("Total Plasmids", overview.get("total", 72360), "P", COLORS["accent"]),
-    stat_card("Annotations", overview.get("total_annotations", 6027698), "A", COLORS["accent2"]),
-    stat_card("Virulence Factors", overview.get("total_virulence_factors", 250691), "V", COLORS["accent4"]),
-    stat_card("Biosynthetic Gene Clusters", overview.get("total_bgcs", 12796), "B", COLORS["accent3"]),
+    stat_card("AMR Annotations", overview.get("total_annotations", 0), "A", COLORS["accent2"]),
+    stat_card("Virulence Factors", overview.get("total_virulence_factors", 0), "V", COLORS["accent4"]),
+    stat_card("RefSeq / INSDC", f"{overview.get('source_RefSeq',0):,} / {overview.get('source_INSDC',0):,}", "S", COLORS["accent3"]),
 ])
 
 TABS = html.Div(className="tabs-container", children=[
@@ -1386,22 +1372,16 @@ def correlations_tab():
             ]),
         ]),
 
-        # --- 3. Phage & Mobile Elements ---
+        # --- 3. MOB Element Density & Mobility ---
         html.Div(className="correlation-section", children=[
-            html.H3("3. Phage & Mobile Genetic Elements",
+            html.H3("3. Mobilization Element Density",
                      className="correlation-heading"),
-            html.Div(className="chart-grid-2", children=[
+            html.Div(className="chart-grid-1", children=[
                 html.Div(className="chart-card", children=[
-                    html.H3("Element Distribution", className="chart-title"),
-                    html.P("Phage/prophage elements and transposases per plasmid",
-                           className="chart-subtitle"),
-                    dcc.Graph(figure=make_phage_distribution_chart(),
-                              config={"displayModeBar": False}),
-                ]),
-                html.Div(className="chart-card", children=[
-                    html.H3("Phage Elements x Mobility", className="chart-title"),
-                    html.P("Conjugative plasmids carry more phage and integrase "
-                           "elements on average",
+                    html.H3("MOB Elements per Plasmid x Mobility",
+                             className="chart-title"),
+                    html.P("Conjugative plasmids carry significantly more "
+                           "mobilization elements on average",
                            className="chart-subtitle"),
                     dcc.Graph(figure=make_phage_mobility_chart(),
                               config={"displayModeBar": False}),
@@ -1478,36 +1458,28 @@ def correlations_tab():
 
         # --- 6. Toxin-Antitoxin Systems ---
         html.Div(className="correlation-section", children=[
-            html.H3(
-                f"6. Toxin-Antitoxin Systems ({correlations.get('ta_total', 0):,} "
-                f"plasmids with TA genes)",
-                className="correlation-heading",
-            ),
+            html.H3("6. Toxin-Antitoxin Systems", className="correlation-heading"),
+            html.Div(className="chart-card", children=[
+                html.P(
+                    "TA system genes (vapB, ccdA/B, relE, higA/B, pemK/I, etc.) are "
+                    "annotated in PGAP/protein data, which is not included in the "
+                    "current database (proteins.csv is 637 MB). "
+                    "TA systems can be viewed per-plasmid in the Plasmid Viewer tab, "
+                    "where GenBank annotations are fetched from NCBI on demand.",
+                    className="text-muted",
+                ),
+            ]) if correlations.get("ta_total", 0) == 0 else
             html.Div(className="chart-grid-2", children=[
                 html.Div(className="chart-card", children=[
                     html.H3("Top TA Genes", className="chart-title"),
-                    html.P("Toxin-antitoxin system components",
-                           className="chart-subtitle"),
                     dcc.Graph(figure=_make_gene_frequency_chart(
                         "ta_gene_counts", "TA", "#e67e22"),
                         config={"displayModeBar": False}),
                 ]),
                 html.Div(className="chart-card", children=[
                     html.H3("TA x Mobility", className="chart-title"),
-                    html.P("Mobility of plasmids carrying TA systems",
-                           className="chart-subtitle"),
                     dcc.Graph(figure=_make_feature_mobility_chart(
                         "ta_vs_mobility", "TA"),
-                        config={"displayModeBar": False}),
-                ]),
-            ]),
-            html.Div(className="chart-grid-1", children=[
-                html.Div(className="chart-card", children=[
-                    html.H3("TA x Inc Group", className="chart-title"),
-                    html.P("Which Inc groups carry TA systems",
-                           className="chart-subtitle"),
-                    dcc.Graph(figure=_make_feature_inc_chart(
-                        "ta_vs_inc", "TA", "#e67e22"),
                         config={"displayModeBar": False}),
                 ]),
             ]),

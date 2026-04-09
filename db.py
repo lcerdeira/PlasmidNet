@@ -53,8 +53,8 @@ def overview_stats():
     total = scalar("SELECT COUNT(*) FROM nuccore")
     circular = scalar("SELECT COUNT(*) FROM nuccore WHERE NUCCORE_Topology='circular'")
     linear = scalar("SELECT COUNT(*) FROM nuccore WHERE NUCCORE_Topology='linear'")
-    refseq = scalar("SELECT COUNT(*) FROM nuccore WHERE NUCCORE_Source='RefSeq'")
-    insdc = scalar("SELECT COUNT(*) FROM nuccore WHERE NUCCORE_Source='INSDC'")
+    refseq = scalar("SELECT COUNT(*) FROM nuccore WHERE LOWER(NUCCORE_Source)='refseq'")
+    insdc = scalar("SELECT COUNT(*) FROM nuccore WHERE LOWER(NUCCORE_Source) IN ('insd','insdc')")
     bacteria = scalar("""
         SELECT COUNT(*) FROM nuccore n
         JOIN taxonomy t ON n.TAXONOMY_UID = t.TAXONOMY_UID
@@ -65,14 +65,14 @@ def overview_stats():
         JOIN taxonomy t ON n.TAXONOMY_UID = t.TAXONOMY_UID
         WHERE t.TAXONOMY_superkingdom LIKE 'Archaea%'
     """)
-    total_amr = scalar("SELECT COUNT(*) FROM amr")
+    total_amr = scalar("SELECT COUNT(*) FROM amr WHERE drug_class IS NOT NULL AND drug_class != ''")
+    total_vir = scalar("SELECT COUNT(*) FROM amr WHERE drug_class IS NULL OR drug_class=''") or 0
     return {
         "total": total, "topology_circular": circular, "topology_linear": linear,
         "source_RefSeq": refseq or 0, "source_INSDC": insdc or 0,
         "kingdom_Bacteria": bacteria, "kingdom_Archaea": archaea,
-        "total_annotations": total_amr,
-        "total_virulence_factors": scalar(
-            "SELECT COUNT(DISTINCT NUCCORE_ACC) FROM amr WHERE drug_class IS NULL OR drug_class=''") or 0,
+        "total_annotations": total_amr + total_vir,
+        "total_virulence_factors": total_vir,
         "total_bgcs": 0,
     }
 
@@ -336,19 +336,30 @@ def build_correlations():
             vir_vs_inc[inc] = vir_vs_inc.get(inc, 0) + 1
 
     # ── 4. Toxin-Antitoxin systems ─────────────────────────────────
-    # TA genes (vapB, ccdA, relE, etc.) are in PGAP annotations, not
-    # in the AMR table. We approximate by checking AMR gene_name for
-    # TA-related keywords and also searching virulence entries.
-    ta_keywords_sql = """
-        SELECT DISTINCT NUCCORE_ACC, gene_symbol, gene_name FROM amr
-        WHERE LOWER(gene_name) LIKE '%toxin-antitoxin%'
-           OR LOWER(gene_name) LIKE '%antitoxin%'
-           OR LOWER(gene_name) LIKE '%addiction module%'
-           OR LOWER(gene_name) LIKE '%plasmid stabilization%'
-           OR LOWER(gene_name) LIKE '%post-segregational killing%'
-           OR LOWER(gene_name) LIKE '%type ii toxin%'
+    # Search by gene_symbol patterns + gene_name keywords across ALL
+    # AMR entries (including those with empty drug_class = virulence)
+    ta_sql = """
+        SELECT DISTINCT NUCCORE_ACC, gene_symbol FROM amr
+        WHERE LOWER(gene_symbol) IN (
+            'rele','relb','higa','higb','mazf','maze','ccda','ccdb',
+            'pard','pare','vapb','vapc','phd','doc','yoeb','yefm',
+            'mqsr','mqsa','hipa','hipb','pema','pemk','pemi',
+            'higb-1','higa-1','relb2','rele2','vapbc','ccdab'
+        )
+        OR LOWER(gene_symbol) LIKE 'vap%'
+        OR LOWER(gene_symbol) LIKE 'ccd%'
+        OR LOWER(gene_symbol) LIKE 'pem%'
+        OR LOWER(gene_symbol) LIKE 'rel%'
+        OR LOWER(gene_symbol) LIKE 'hig%'
+        OR LOWER(gene_symbol) LIKE 'maz%'
+        OR LOWER(gene_symbol) LIKE 'par%'
+        OR LOWER(gene_name) LIKE '%toxin-antitoxin%'
+        OR LOWER(gene_name) LIKE '%antitoxin%'
+        OR LOWER(gene_name) LIKE '%addiction module%'
+        OR LOWER(gene_name) LIKE '%plasmid stabilization%'
+        OR LOWER(gene_name) LIKE '%post-segregational%'
     """
-    ta_rows_db = q(ta_keywords_sql)
+    ta_rows_db = q(ta_sql)
     ta_from_db = {}
     for r in ta_rows_db:
         ta_from_db.setdefault(r["NUCCORE_ACC"], []).append(r["gene_symbol"])
@@ -406,34 +417,20 @@ def build_correlations():
             if part and "(-)" not in part:
                 pmlst_allele_freq[part] = pmlst_allele_freq.get(part, 0) + 1
 
-    # ── 7. Phage / transposase from typing_markers ──────────────────
-    # Count phage-related markers per plasmid
-    phage_markers = q("""
-        SELECT NUCCORE_ACC, element
-        FROM typing_markers
-        WHERE element LIKE '%phage%' OR element LIKE '%Phage%'
-    """)
-    phage_per_plasmid = {}
-    for r in phage_markers:
-        phage_per_plasmid.setdefault(r["NUCCORE_ACC"], set()).add(r["element"])
+    # ── 7. Transposase elements from typing_markers ─────────────────
+    # Note: phage data requires PGAP annotations (proteins.csv, 637MB)
+    # which is not included. We report MOB-associated element counts.
+    mob_element_counts = {}
+    mob_per_plasmid = {}
+    tm_rows = q("SELECT NUCCORE_ACC, element FROM typing_markers")
+    for r in tm_rows:
+        el = r["element"]
+        mob_element_counts[el] = mob_element_counts.get(el, 0) + 1
+        mob_per_plasmid.setdefault(r["NUCCORE_ACC"], set()).add(el)
 
-    phage_bins = {"0": 0, "1-2": 0, "3-5": 0, "6-10": 0, ">10": 0}
-    total_w_phage = len(phage_per_plasmid)
-    total_wo_phage = total_plasmids - total_w_phage
-    phage_bins["0"] = total_wo_phage
-    for acc, elements in phage_per_plasmid.items():
-        n = len(elements)
-        if n <= 2:
-            phage_bins["1-2"] += 1
-        elif n <= 5:
-            phage_bins["3-5"] += 1
-        elif n <= 10:
-            phage_bins["6-10"] += 1
-        else:
-            phage_bins[">10"] += 1
-
+    phage_bins = {}  # empty = not available
     phage_mob = {"conjugative": [], "mobilizable": [], "non-mobilizable": []}
-    for acc, elements in phage_per_plasmid.items():
+    for acc, elements in mob_per_plasmid.items():
         mob = plasmid_mob.get(acc, "unknown")
         if mob in phage_mob:
             phage_mob[mob].append(len(elements))
