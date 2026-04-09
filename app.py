@@ -1601,6 +1601,191 @@ def make_simpson_paradox_table():
     ])
 
 
+def make_xgboost_shap_chart():
+    """XGBoost + SHAP: feature importance with interaction effects."""
+    import xgboost as xgb
+    import shap
+    import numpy as np
+    from sklearn.preprocessing import LabelEncoder
+
+    rows = db.analytics_feature_matrix()
+    if not rows or len(rows) < 500:
+        return go.Figure(), None
+
+    df = pd.DataFrame(rows)
+
+    # Encode features
+    features = []
+    X_cols = {}
+    for col in ["country", "genus", "host_category", "year"]:
+        le = LabelEncoder()
+        X_cols[col] = le.fit_transform(df[col].fillna("Unknown"))
+        features.append(col)
+
+    X_cols["length"] = np.log1p(df["length"].fillna(0).values.astype(float))
+    features.append("length")
+    X_cols["gc"] = df["gc"].fillna(0).values.astype(float)
+    features.append("gc")
+
+    # Top Inc groups as binary features
+    top_inc = ["IncFIB", "IncFII", "IncFIA", "IncI1", "IncN",
+               "IncHI2", "IncC", "IncX4", "ColRNAI", "IncR"]
+    for inc in top_inc:
+        X_cols[inc] = df["rep_type"].fillna("").str.contains(inc).astype(int).values
+        features.append(inc)
+
+    X = pd.DataFrame(X_cols)[features]
+    y_le = LabelEncoder()
+    y = y_le.fit_transform(df["mobility"])
+
+    # Train XGBoost
+    model = xgb.XGBClassifier(
+        n_estimators=200, max_depth=6, learning_rate=0.1,
+        subsample=0.8, colsample_bytree=0.8,
+        random_state=42, n_jobs=-1, eval_metric="mlogloss",
+    )
+    model.fit(X, y)
+
+    # SHAP values (use TreeExplainer for speed)
+    explainer = shap.TreeExplainer(model)
+    # Sample for speed
+    X_sample = X.sample(min(5000, len(X)), random_state=42)
+    shap_values = explainer.shap_values(X_sample)
+
+    # Mean absolute SHAP per feature (across all classes)
+    sv = np.array(shap_values)
+    if sv.ndim == 3:
+        # Shape (n_samples, n_features, n_classes) — average over samples and classes
+        mean_shap = np.mean(np.abs(sv), axis=(0, 2))
+    elif sv.ndim == 2:
+        mean_shap = np.abs(sv).mean(axis=0)
+    else:
+        mean_shap = np.abs(sv).flatten()
+    mean_shap = mean_shap[:len(features)]  # safety trim
+
+    # Display names
+    display = [f.replace("_", " ").capitalize() for f in features]
+
+    imp_df = pd.DataFrame({
+        "Feature": display, "SHAP Importance": mean_shap,
+    }).sort_values("SHAP Importance", ascending=True)
+
+    fig = px.bar(imp_df, x="SHAP Importance", y="Feature", orientation="h",
+                 color="SHAP Importance", color_continuous_scale="Viridis")
+    fig.update_layout(
+        template=PLOTLY_TEMPLATE, paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)", font_color=COLORS["text"],
+        margin=dict(t=10, b=30, l=10, r=10), height=500,
+        coloraxis_showscale=False,
+        xaxis_title="Mean |SHAP value|", yaxis_title="",
+    )
+
+    # Accuracy info
+    from sklearn.metrics import accuracy_score
+    acc = accuracy_score(y, model.predict(X))
+
+    return fig, round(acc * 100, 1)
+
+
+def make_temporal_trends_chart():
+    """Line chart: AMR drug class prevalence trends by year."""
+    rows = db.q("""
+        SELECT SUBSTR(n.NUCCORE_CreateDate, 1, 4) AS year,
+               a.drug_class, COUNT(DISTINCT n.NUCCORE_ACC) AS cnt
+        FROM nuccore n
+        JOIN amr a ON n.NUCCORE_ACC = a.NUCCORE_ACC
+        WHERE a.drug_class IN ('BETA-LACTAM', 'AMINOGLYCOSIDE', 'TETRACYCLINE',
+                               'SULFONAMIDE', 'QUINOLONE', 'TRIMETHOPRIM',
+                               'PHENICOL', 'MERCURY', 'QUATERNARY AMMONIUM')
+          AND LENGTH(n.NUCCORE_CreateDate) >= 4
+          AND CAST(SUBSTR(n.NUCCORE_CreateDate, 1, 4) AS INTEGER) >= 2010
+        GROUP BY year, a.drug_class
+        ORDER BY year
+    """)
+    if not rows:
+        return go.Figure()
+
+    # Normalize by total plasmids per year
+    year_totals = db.q("""
+        SELECT SUBSTR(NUCCORE_CreateDate, 1, 4) AS year, COUNT(*) AS total
+        FROM nuccore
+        WHERE LENGTH(NUCCORE_CreateDate) >= 4
+          AND CAST(SUBSTR(NUCCORE_CreateDate, 1, 4) AS INTEGER) >= 2010
+        GROUP BY year
+    """)
+    totals = {r["year"]: r["total"] for r in year_totals}
+
+    df = pd.DataFrame(rows)
+    df["prevalence"] = df.apply(
+        lambda r: r["cnt"] / totals.get(r["year"], 1) * 100, axis=1)
+
+    fig = px.line(
+        df, x="year", y="prevalence", color="drug_class",
+        markers=True,
+        color_discrete_sequence=px.colors.qualitative.Set2 + px.colors.qualitative.Pastel,
+    )
+    fig.update_layout(
+        template=PLOTLY_TEMPLATE, paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)", font_color=COLORS["text"],
+        margin=dict(t=10, b=10, l=10, r=10), height=450,
+        xaxis_title="Year", yaxis_title="% of plasmids carrying resistance",
+        legend=dict(title="Drug Class", font_size=9),
+    )
+    return fig
+
+
+def make_inc_trends_chart():
+    """Line chart: Inc group prevalence trends by year."""
+    rows = db.q("""
+        SELECT SUBSTR(n.NUCCORE_CreateDate, 1, 4) AS year, t.rep_type
+        FROM nuccore n
+        JOIN typing t ON n.NUCCORE_ACC = t.NUCCORE_ACC
+        WHERE t.rep_type != ''
+          AND LENGTH(n.NUCCORE_CreateDate) >= 4
+          AND CAST(SUBSTR(n.NUCCORE_CreateDate, 1, 4) AS INTEGER) >= 2010
+    """)
+    if not rows:
+        return go.Figure()
+
+    year_totals = db.q("""
+        SELECT SUBSTR(NUCCORE_CreateDate, 1, 4) AS year, COUNT(*) AS total
+        FROM nuccore WHERE LENGTH(NUCCORE_CreateDate) >= 4
+          AND CAST(SUBSTR(NUCCORE_CreateDate, 1, 4) AS INTEGER) >= 2010
+        GROUP BY year
+    """)
+    totals = {r["year"]: r["total"] for r in year_totals}
+
+    top_inc = ["IncFIB", "IncFII", "IncFIA", "IncI1", "IncN", "IncHI2", "ColRNAI", "IncC"]
+    year_inc = {}
+    for r in rows:
+        year = r["year"]
+        for rt in r["rep_type"].split(","):
+            rt = rt.strip()
+            if rt in top_inc:
+                year_inc.setdefault(year, {}).setdefault(rt, 0)
+                year_inc[year][rt] += 1
+
+    plot_rows = []
+    for year in sorted(year_inc.keys()):
+        total = totals.get(year, 1)
+        for inc in top_inc:
+            cnt = year_inc[year].get(inc, 0)
+            plot_rows.append({"year": year, "Inc Group": inc,
+                              "prevalence": cnt / total * 100})
+
+    df = pd.DataFrame(plot_rows)
+    fig = px.line(df, x="year", y="prevalence", color="Inc Group", markers=True,
+                  color_discrete_sequence=px.colors.qualitative.Set2)
+    fig.update_layout(
+        template=PLOTLY_TEMPLATE, paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)", font_color=COLORS["text"],
+        margin=dict(t=10, b=10, l=10, r=10), height=450,
+        xaxis_title="Year", yaxis_title="% of plasmids",
+        legend=dict(title="Inc Group", font_size=9),
+    )
+    return fig
+
+
 # ---------------------------------------------------------------------------
 # Layout
 # ---------------------------------------------------------------------------
@@ -2228,25 +2413,59 @@ def analytics_tab():
             ]),
         ]),
 
-        # --- 3. Feature importance ---
+        # --- 3. XGBoost + SHAP Feature Importance ---
         html.Div(className="correlation-section", children=[
-            html.H3("3. ML Feature Importance (Random Forest)",
+            html.H3("3. XGBoost + SHAP Feature Importance",
                      className="correlation-heading"),
-            html.Div(className="chart-card", children=[
-                html.H3("What Predicts Mobility?", className="chart-title"),
-                html.P("Random Forest trained on 57K plasmids to predict mobility "
-                       "from country, genus, host source, year, length, GC%, and "
-                       "Inc groups. If 'Country' ranks high, regional differences "
-                       "are not fully explained by other features.",
-                       className="chart-subtitle"),
-                dcc.Graph(figure=make_feature_importance_chart(),
-                          config={"displayModeBar": False}),
+            html.Div(className="chart-grid-2", children=[
+                html.Div(className="chart-card", children=[
+                    html.H3("SHAP Values (XGBoost)", className="chart-title"),
+                    html.P("XGBoost trained on 57K plasmids. SHAP values show "
+                           "each feature's contribution to the mobility prediction. "
+                           "Higher = more predictive.",
+                           className="chart-subtitle"),
+                    dcc.Loading(html.Div(id="shap-chart")),
+                ]),
+                html.Div(className="chart-card", children=[
+                    html.H3("Random Forest Importance", className="chart-title"),
+                    html.P("Gini importance from a separate Random Forest model "
+                           "for comparison with SHAP.",
+                           className="chart-subtitle"),
+                    dcc.Graph(figure=make_feature_importance_chart(),
+                              config={"displayModeBar": False}),
+                ]),
             ]),
         ]),
 
-        # --- 4. Simpson's paradox ---
+        # --- 4. Temporal Trends ---
         html.Div(className="correlation-section", children=[
-            html.H3("4. Simpson's Paradox Detector",
+            html.H3("4. Temporal Trends (2010-2024)",
+                     className="correlation-heading"),
+            html.Div(className="chart-grid-2", children=[
+                html.Div(className="chart-card", children=[
+                    html.H3("AMR Drug Class Prevalence Over Time",
+                             className="chart-title"),
+                    html.P("Percentage of plasmids carrying each resistance class "
+                           "per year. Rising trends suggest increasing selective pressure.",
+                           className="chart-subtitle"),
+                    dcc.Graph(figure=make_temporal_trends_chart(),
+                              config={"displayModeBar": False}),
+                ]),
+                html.Div(className="chart-card", children=[
+                    html.H3("Inc Group Prevalence Over Time",
+                             className="chart-title"),
+                    html.P("Percentage of plasmids with each Inc group per year. "
+                           "Shifts indicate changing plasmid populations.",
+                           className="chart-subtitle"),
+                    dcc.Graph(figure=make_inc_trends_chart(),
+                              config={"displayModeBar": False}),
+                ]),
+            ]),
+        ]),
+
+        # --- 5. Simpson's paradox ---
+        html.Div(className="correlation-section", children=[
+            html.H3("5. Simpson's Paradox Detector",
                      className="correlation-heading"),
             html.Div(className="chart-card", children=[
                 html.H3("Inc Groups Where Overall Trend Reverses by Species",
@@ -2376,6 +2595,23 @@ def search_taxonomy(n_clicks, genus, species):
             return html.P(f"No plasmids found for {search_term}.", className="text-muted")
     except Exception as e:
         return html.P(f"Error: {str(e)}", className="text-danger")
+
+
+@callback(
+    Output("shap-chart", "children"),
+    Input("main-tabs", "value"),
+    prevent_initial_call=True,
+)
+def compute_shap(tab):
+    if tab != "analytics":
+        raise dash.exceptions.PreventUpdate
+    fig, acc = make_xgboost_shap_chart()
+    acc_text = f"Model accuracy: {acc}%" if acc else ""
+    return html.Div([
+        html.P(acc_text, className="chart-subtitle",
+               style={"fontWeight": "600", "color": COLORS["accent"]}),
+        dcc.Graph(figure=fig, config={"displayModeBar": False}),
+    ])
 
 
 @callback(
