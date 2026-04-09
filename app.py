@@ -12,28 +12,30 @@ from dash import dcc, html, dash_table, callback, Input, Output, State
 import plotly.express as px
 import plotly.graph_objects as go
 import pandas as pd
-import requests
-
-from data_loader import (
-    load_all_data, fetch_summary, fetch_genbank_features,
-    fetch_genbank_full, extract_plasmid_features, API_BASE,
-)
+from data_loader import fetch_genbank_full
+import db
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Load data
+# Load data (all from local SQLite — instant, full database)
 # ---------------------------------------------------------------------------
-DATA = load_all_data(use_fallback=True)
-overview = DATA["overview"]
-taxonomy = DATA["taxonomy"]
-amr = DATA["amr"]
-mob_typing = DATA.get("mob_typing", {})
-correlations = DATA.get("correlations", {})
-temporal = DATA.get("temporal", {})
-gc_dist = DATA.get("gc_distribution", {})
-length_dist = DATA.get("length_distribution", {})
+logger.info("Loading data from SQLite ...")
+overview = db.overview_stats()
+taxonomy = db.top_genera(20)
+amr = db.amr_drug_class_counts()
+mob_typing = {
+    "rep_types": db.inc_group_counts(20),
+    "relaxase_types": db.relaxase_counts(),
+    "mpf_types": db.mpf_counts(),
+    "mobility": db.mobility_distribution(),
+}
+correlations = db.build_correlations()
+temporal = db.temporal_distribution()
+gc_dist = db.gc_distribution()
+length_dist = db.length_distribution()
+logger.info(f"Loaded {overview['total']:,} plasmids from SQLite")
 
 # ---------------------------------------------------------------------------
 # App setup
@@ -1122,10 +1124,10 @@ HEADER = html.Div(className="header", children=[
 ])
 
 STATS_ROW = html.Div(className="stats-row", children=[
-    stat_card("Total Plasmids", overview.get("total", 72360), COLORS["accent"]),
-    stat_card("Annotations", overview.get("total_annotations", 6027698), COLORS["accent2"]),
-    stat_card("Virulence Factors", overview.get("total_virulence_factors", 250691), COLORS["accent4"]),
-    stat_card("Biosynthetic Gene Clusters", overview.get("total_bgcs", 12796), COLORS["accent3"]),
+    stat_card("Total Plasmids", overview.get("total", 72360), "P", COLORS["accent"]),
+    stat_card("Annotations", overview.get("total_annotations", 6027698), "A", COLORS["accent2"]),
+    stat_card("Virulence Factors", overview.get("total_virulence_factors", 250691), "V", COLORS["accent4"]),
+    stat_card("Biosynthetic Gene Clusters", overview.get("total_bgcs", 12796), "B", COLORS["accent3"]),
 ])
 
 TABS = html.Div(className="tabs-container", children=[
@@ -1631,30 +1633,23 @@ def search_taxonomy(n_clicks, genus, species):
     if not genus and not species:
         return html.P("Please enter a genus or species name.", className="text-muted")
 
-    params = {}
-    if genus:
-        params["TAXONOMY_genus"] = genus
-    if species:
-        params["TAXONOMY_species"] = species
-
     try:
-        resp = requests.get(f"{API_BASE}/filter_taxonomy", params=params, timeout=30)
-        if resp.status_code == 200:
-            data = resp.json()
-            if isinstance(data, list):
-                count = len(data)
-            elif isinstance(data, dict):
-                # Try to extract count
-                for key in ["results", "data", "accessions"]:
-                    if key in data:
-                        count = len(data[key])
-                        break
-                else:
-                    count = len(data)
-            else:
-                count = 0
+        where = []
+        params = []
+        if genus:
+            where.append("t.TAXONOMY_genus LIKE ?")
+            params.append(f"%{genus}%")
+        if species:
+            where.append("t.TAXONOMY_species LIKE ?")
+            params.append(f"%{species}%")
 
-            search_term = species or genus
+        count = db.scalar(
+            f"SELECT COUNT(*) FROM nuccore n JOIN taxonomy t "
+            f"ON n.TAXONOMY_UID = t.TAXONOMY_UID WHERE {' AND '.join(where)}",
+            tuple(params),
+        )
+        search_term = species or genus
+        if count:
             return html.Div([
                 html.P(f"Found {count:,} plasmids for {search_term}",
                        className="result-count"),
@@ -1665,9 +1660,9 @@ def search_taxonomy(n_clicks, genus, species):
                 ),
             ])
         else:
-            return html.P(f"No results found (status {resp.status_code})", className="text-muted")
+            return html.P(f"No plasmids found for {search_term}.", className="text-muted")
     except Exception as e:
-        return html.P(f"Error querying API: {str(e)}", className="text-danger")
+        return html.P(f"Error: {str(e)}", className="text-danger")
 
 
 @callback(
@@ -1682,19 +1677,54 @@ def visualize_plasmid(n_clicks, accession):
 
     accession = accession.strip()
     try:
-        # 1. Try PLSDB first
-        data = fetch_summary(accession)
-        from_ncbi = False
+        # 1. Try local SQLite database first
+        plsdb_data = db.plasmid_summary(accession)
+        from_ncbi = plsdb_data is None
 
-        # Fix: PLSDB returns {"count":0} for missing accessions, not "notfound"
-        plsdb_found = (data and "Metadata_annotations" in data)
+        if plsdb_data:
+            nuc = plsdb_data["nuccore"]
+            tax = plsdb_data["taxonomy"]
+            typ = plsdb_data["typing"]
+            plasmid_feat = {
+                "length": nuc.get("NUCCORE_Length", 0),
+                "topology": nuc.get("NUCCORE_Topology", "circular"),
+                "gc": nuc.get("NUCCORE_GC", 0),
+                "description": nuc.get("NUCCORE_Description", ""),
+                "organism": tax.get("TAXONOMY_species", ""),
+                "accession": accession,
+                "amr": [
+                    {"gene": a["gene_symbol"], "product": a["gene_name"] or "",
+                     "drug_class": a["drug_class"] or "", "agent": a["antimicrobial_agent"] or "",
+                     "start": a["input_gene_start"] or 0, "end": a["input_gene_stop"] or 0,
+                     "strand": 1 if a.get("strand_orientation", "+") == "+" else -1}
+                    for a in plsdb_data["amr"]
+                    if a.get("input_gene_start")
+                ],
+                "mob": [
+                    {"element": m["element"], "biomarker": m["biomarker"] or m["element"],
+                     "start": min(m["sstart"] or 0, m["send"] or 0),
+                     "end": max(m["sstart"] or 0, m["send"] or 0),
+                     "strand": 1 if m.get("sstrand") == "plus" else -1,
+                     "identity": m["pident"]}
+                    for m in plsdb_data["mob"]
+                    if m.get("sstart")
+                ],
+                "bgc": [],
+                "typing": {
+                    "rep_type": typ.get("rep_type", ""),
+                    "relaxase_type": typ.get("relaxase_type", ""),
+                    "mpf_type": typ.get("mpf_type", ""),
+                    "orit_type": typ.get("orit_type", ""),
+                    "predicted_mobility": typ.get("predicted_mobility", ""),
+                    "host_range": typ.get("predicted_host_range_overall_name", ""),
+                    "host_range_rank": typ.get("predicted_host_range_overall_rank", ""),
+                    "pmlst_scheme": typ.get("PMLST_scheme", ""),
+                    "pmlst_alleles": typ.get("PMLST_alleles", ""),
+                },
+                "pgap_count": 0,
+            }
 
-        if plsdb_found:
-            plasmid_feat = extract_plasmid_features(data)
-        else:
-            from_ncbi = True
-
-        # 2. Always fetch GenBank for CDS + GC content + fallback metadata
+        # 2. Always fetch GenBank for CDS + GC content (+ fallback metadata)
         gb_data = fetch_genbank_full(accession)
         if not gb_data and from_ncbi:
             return html.P(
@@ -1718,7 +1748,7 @@ def visualize_plasmid(n_clicks, accession):
                 "typing": {}, "pgap_count": 0,
             }
 
-        # Use GC from GenBank if PLSDB didn't provide it
+        # Use GC from GenBank if DB didn't provide it
         if plasmid_feat.get("gc", 0) == 0 and gb_data:
             plasmid_feat["gc"] = gb_data["metadata"].get("gc_overall", 0)
 
@@ -1864,35 +1894,31 @@ def lookup_plasmid(n_clicks, accession):
 
     accession = accession.strip()
     try:
-        data = fetch_summary(accession)
-        if not data or data.get("label") == "notfound":
+        data = db.plasmid_summary(accession)
+        if not data:
             return html.P(f"Accession '{accession}' not found in PLSDB.",
                           className="text-danger")
 
-        # Build detail cards from the response
-        cards = []
-
-        # Extract metadata - the response structure varies
-        meta = data.get("Metadata_annotations", data)
+        nuc = data["nuccore"]
+        tax = data["taxonomy"]
 
         detail_fields = [
-            ("Accession", "NUCCORE_ACC"),
-            ("Description", "NUCCORE_Description"),
-            ("Topology", "NUCCORE_Topology"),
-            ("Length (bp)", "NUCCORE_Length"),
-            ("GC Content (%)", "NUCCORE_GC"),
-            ("Source", "NUCCORE_Source"),
-            ("Create Date", "NUCCORE_CreateDate"),
-            ("Organism", "TAXONOMY_species"),
-            ("Genus", "TAXONOMY_genus"),
-            ("Family", "TAXONOMY_family"),
-            ("Phylum", "TAXONOMY_phylum"),
+            ("Accession", nuc.get("NUCCORE_ACC")),
+            ("Description", nuc.get("NUCCORE_Description")),
+            ("Topology", nuc.get("NUCCORE_Topology")),
+            ("Length (bp)", f"{nuc.get('NUCCORE_Length', 0):,}"),
+            ("GC Content", f"{(nuc.get('NUCCORE_GC', 0) or 0) * 100:.1f}%"),
+            ("Source", nuc.get("NUCCORE_Source")),
+            ("Create Date", nuc.get("NUCCORE_CreateDate")),
+            ("Species", tax.get("TAXONOMY_species")),
+            ("Genus", tax.get("TAXONOMY_genus")),
+            ("Family", tax.get("TAXONOMY_family")),
+            ("Phylum", tax.get("TAXONOMY_phylum")),
         ]
 
         detail_items = []
-        for label, key in detail_fields:
-            value = _deep_get(meta, key)
-            if value is not None and str(value).strip():
+        for label, value in detail_fields:
+            if value and str(value).strip():
                 detail_items.append(
                     html.Div(className="detail-item", children=[
                         html.Span(label, className="detail-label"),
@@ -1917,20 +1943,6 @@ def lookup_plasmid(n_clicks, accession):
 
     except Exception as e:
         return html.P(f"Error: {str(e)}", className="text-danger")
-
-
-def _deep_get(d, key):
-    """Recursively search for a key in nested dicts."""
-    if not isinstance(d, dict):
-        return None
-    if key in d:
-        return d[key]
-    for v in d.values():
-        if isinstance(v, dict):
-            result = _deep_get(v, key)
-            if result is not None:
-                return result
-    return None
 
 
 # ---------------------------------------------------------------------------
