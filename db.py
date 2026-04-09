@@ -1045,6 +1045,116 @@ def comobilization_data():
     }
 
 
+def comobilization_ml_data():
+    """
+    Build feature matrix for co-mobilization ML:
+    Predict whether a mobilizable plasmid is co-located with a conjugative one
+    based on relaxase type, Inc group, host genus, length, etc.
+    """
+    # Positive examples: mobilizable plasmids that ARE co-located with conjugative
+    positives = q("""
+        SELECT DISTINCT n_mob.NUCCORE_ACC AS acc,
+               t_mob.relaxase_type, t_mob.rep_type AS mob_inc,
+               t_mob.orit_type,
+               n_mob.NUCCORE_Length AS length, n_mob.NUCCORE_GC AS gc,
+               tx.TAXONOMY_genus AS genus,
+               t_conj.mpf_type AS conj_mpf, t_conj.rep_type AS conj_inc
+        FROM nuccore n_mob
+        JOIN nuccore n_conj ON n_mob.BIOSAMPLE_UID = n_conj.BIOSAMPLE_UID
+                           AND n_mob.NUCCORE_ACC != n_conj.NUCCORE_ACC
+        JOIN typing t_mob ON n_mob.NUCCORE_ACC = t_mob.NUCCORE_ACC
+        JOIN typing t_conj ON n_conj.NUCCORE_ACC = t_conj.NUCCORE_ACC
+        JOIN taxonomy tx ON n_mob.TAXONOMY_UID = tx.TAXONOMY_UID
+        WHERE t_mob.predicted_mobility = 'mobilizable'
+          AND t_conj.predicted_mobility = 'conjugative'
+          AND n_mob.BIOSAMPLE_UID > 0
+          AND t_mob.relaxase_type != ''
+    """)
+
+    # Negative examples: mobilizable plasmids NOT co-located with conjugative
+    negatives = q("""
+        SELECT t_mob.NUCCORE_ACC AS acc,
+               t_mob.relaxase_type, t_mob.rep_type AS mob_inc,
+               t_mob.orit_type,
+               n.NUCCORE_Length AS length, n.NUCCORE_GC AS gc,
+               tx.TAXONOMY_genus AS genus
+        FROM typing t_mob
+        JOIN nuccore n ON t_mob.NUCCORE_ACC = n.NUCCORE_ACC
+        JOIN taxonomy tx ON n.TAXONOMY_UID = tx.TAXONOMY_UID
+        WHERE t_mob.predicted_mobility = 'mobilizable'
+          AND t_mob.relaxase_type != ''
+          AND t_mob.NUCCORE_ACC NOT IN (
+              SELECT DISTINCT n2.NUCCORE_ACC
+              FROM nuccore n2
+              JOIN nuccore n3 ON n2.BIOSAMPLE_UID = n3.BIOSAMPLE_UID
+                             AND n2.NUCCORE_ACC != n3.NUCCORE_ACC
+              JOIN typing t3 ON n3.NUCCORE_ACC = t3.NUCCORE_ACC
+              WHERE t3.predicted_mobility = 'conjugative'
+                AND n2.BIOSAMPLE_UID > 0
+          )
+        LIMIT 10000
+    """)
+
+    return positives, negatives
+
+
+def relaxase_t4ss_compatibility():
+    """
+    Observed relaxase x T4SS co-occurrence vs expected (from literature).
+    Returns data for a comparison chart.
+    """
+    # Known rules
+    KNOWN = {
+        ("MOBF", "MPF_F"): True,
+        ("MOBP", "MPF_T"): True, ("MOBP", "MPF_F"): True,
+        ("MOBQ", "MPF_T"): True, ("MOBQ", "MPF_F"): True,
+        ("MOBH", "MPF_I"): True,
+        ("MOBC", "MPF_T"): True,
+        ("MOBV", "MPF_T"): True,
+    }
+
+    # Observed
+    rows = q("""
+        SELECT t_conj.mpf_type AS mpf, t_mob.relaxase_type AS relaxase,
+               COUNT(*) AS cnt
+        FROM nuccore n1
+        JOIN nuccore n2 ON n1.BIOSAMPLE_UID = n2.BIOSAMPLE_UID
+                       AND n1.NUCCORE_ACC != n2.NUCCORE_ACC
+        JOIN typing t_conj ON n1.NUCCORE_ACC = t_conj.NUCCORE_ACC
+        JOIN typing t_mob ON n2.NUCCORE_ACC = t_mob.NUCCORE_ACC
+        WHERE t_conj.predicted_mobility = 'conjugative'
+          AND t_mob.predicted_mobility = 'mobilizable'
+          AND n1.BIOSAMPLE_UID > 0
+          AND t_conj.mpf_type != '' AND t_mob.relaxase_type != ''
+        GROUP BY mpf, relaxase
+    """)
+
+    # Parse comma-separated relaxase types
+    observed = {}
+    for r in rows:
+        mpf = r["mpf"].strip()
+        for relax in r["relaxase"].split(","):
+            relax = relax.strip()
+            if relax and mpf:
+                key = (relax, mpf)
+                observed[key] = observed.get(key, 0) + r["cnt"]
+
+    result = []
+    all_relax = sorted(set(k[0] for k in observed))
+    all_mpf = sorted(set(k[1] for k in observed))
+
+    for relax in all_relax:
+        for mpf in all_mpf:
+            cnt = observed.get((relax, mpf), 0)
+            known = KNOWN.get((relax, mpf), False)
+            result.append({
+                "relaxase": relax, "mpf": mpf, "count": cnt,
+                "known_compatible": known,
+            })
+
+    return result, all_relax, all_mpf
+
+
 def amr_cooccurrence(min_count=50):
     """
     AMR gene co-occurrence: which resistance genes appear together

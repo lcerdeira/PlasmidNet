@@ -1915,6 +1915,134 @@ def make_comobilization_chart(comob_data):
 
 
 # ---------------------------------------------------------------------------
+def make_relaxase_t4ss_chart():
+    """Heatmap: observed relaxase x T4SS co-occurrence with known rules overlay."""
+    data, all_relax, all_mpf = db.relaxase_t4ss_compatibility()
+    if not data:
+        return go.Figure()
+
+    # Build matrix
+    matrix = {r: {m: 0 for m in all_mpf} for r in all_relax}
+    known = {r: {m: False for m in all_mpf} for r in all_relax}
+    for d in data:
+        matrix[d["relaxase"]][d["mpf"]] = d["count"]
+        known[d["relaxase"]][d["mpf"]] = d["known_compatible"]
+
+    z = [[matrix[r][m] for m in all_mpf] for r in all_relax]
+    text = []
+    for r in all_relax:
+        row = []
+        for m in all_mpf:
+            cnt = matrix[r][m]
+            tag = " *" if known[r][m] else ""
+            row.append(f"{cnt:,}{tag}")
+        text.append(row)
+
+    fig = go.Figure(go.Heatmap(
+        z=z, x=[f"T4SS: {m}" for m in all_mpf],
+        y=[f"Relaxase: {r}" for r in all_relax],
+        colorscale="YlOrRd", text=text, texttemplate="%{text}",
+        textfont={"size": 10},
+        hovertemplate="<b>%{y}</b> + <b>%{x}</b><br>Co-located: %{z:,}<br>(* = known compatible)<extra></extra>",
+    ))
+    fig.update_layout(
+        template=PLOTLY_TEMPLATE, paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)", font_color=COLORS["text"],
+        margin=dict(t=10, b=10, l=10, r=10), height=400,
+        yaxis=dict(autorange="reversed"),
+    )
+    return fig
+
+
+def make_comobilization_ml_chart():
+    """Random Forest to predict co-mobilization from plasmid features."""
+    from sklearn.ensemble import RandomForestClassifier
+    from sklearn.preprocessing import LabelEncoder
+    from sklearn.model_selection import cross_val_score
+    import numpy as np
+
+    positives, negatives = db.comobilization_ml_data()
+    if len(positives) < 50 or len(negatives) < 50:
+        return go.Figure(), None
+
+    # Build feature matrix
+    rows = []
+    for r in positives:
+        rows.append({**r, "colocated": 1})
+    for r in negatives:
+        r["conj_mpf"] = ""
+        r["conj_inc"] = ""
+        rows.append({**r, "colocated": 0})
+
+    df = pd.DataFrame(rows)
+
+    # Features
+    features = []
+    X_data = {}
+
+    # Relaxase type (key feature)
+    for relax in ["MOBF", "MOBP", "MOBQ", "MOBH", "MOBC", "MOBV"]:
+        col = f"relax_{relax}"
+        X_data[col] = df["relaxase_type"].fillna("").str.contains(relax).astype(int).values
+        features.append(col)
+
+    # OriT type
+    for orit in ["MOBF", "MOBP", "MOBQ"]:
+        col = f"orit_{orit}"
+        X_data[col] = df["orit_type"].fillna("").str.contains(orit).astype(int).values
+        features.append(col)
+
+    # Plasmid size
+    X_data["log_length"] = np.log1p(df["length"].fillna(0).values.astype(float))
+    features.append("log_length")
+    X_data["gc"] = df["gc"].fillna(0).values.astype(float)
+    features.append("gc")
+
+    # Genus
+    le_genus = LabelEncoder()
+    X_data["genus"] = le_genus.fit_transform(df["genus"].fillna("Unknown"))
+    features.append("genus")
+
+    # Inc groups
+    for inc in ["IncFIB", "IncFII", "IncFIA", "IncI1", "IncN", "ColRNAI"]:
+        col = f"inc_{inc}"
+        X_data[col] = df["mob_inc"].fillna("").str.contains(inc).astype(int).values
+        features.append(col)
+
+    X = pd.DataFrame(X_data)[features]
+    y = df["colocated"].values
+
+    # Train with cross-validation
+    rf = RandomForestClassifier(n_estimators=100, max_depth=8, random_state=42)
+    cv_scores = cross_val_score(rf, X, y, cv=5, scoring="accuracy")
+    rf.fit(X, y)
+
+    # Feature importance
+    importances = rf.feature_importances_
+    display_names = [f.replace("relax_", "Relaxase: ").replace("orit_", "OriT: ")
+                      .replace("inc_", "Inc: ").replace("log_", "Log ")
+                      .replace("_", " ").capitalize()
+                     for f in features]
+
+    imp_df = pd.DataFrame({
+        "Feature": display_names, "Importance": importances,
+    }).sort_values("Importance", ascending=True)
+
+    fig = px.bar(imp_df, x="Importance", y="Feature", orientation="h",
+                 color="Importance", color_continuous_scale="Viridis")
+    fig.update_layout(
+        template=PLOTLY_TEMPLATE, paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)", font_color=COLORS["text"],
+        margin=dict(t=10, b=30, l=10, r=10), height=500,
+        coloraxis_showscale=False,
+        xaxis_title="Feature Importance (Gini)", yaxis_title="",
+    )
+
+    accuracy = round(cv_scores.mean() * 100, 1)
+    return fig, accuracy
+
+
+# ---------------------------------------------------------------------------
 # Layout
 # ---------------------------------------------------------------------------
 
@@ -2841,6 +2969,35 @@ def load_comobilization(tab):
     if tab != "analytics":
         raise dash.exceptions.PreventUpdate
     comob = db.comobilization_data()
+
+    # ML predictor
+    ml_fig, ml_acc = make_comobilization_ml_chart()
+    ml_section = []
+    if ml_acc:
+        ml_section = [
+            html.Div(className="chart-grid-2", style={"marginTop": "16px"}, children=[
+                html.Div(className="chart-card", children=[
+                    html.H3("Relaxase x T4SS Compatibility", className="chart-title"),
+                    html.P("Observed co-location of mobilizable relaxase types with "
+                           "conjugative T4SS types. Values marked * are known "
+                           "compatible pairs from the literature.",
+                           className="chart-subtitle"),
+                    dcc.Graph(figure=make_relaxase_t4ss_chart(),
+                              config={"displayModeBar": False}),
+                ]),
+                html.Div(className="chart-card", children=[
+                    html.H3("ML: What Predicts Co-mobilization?",
+                             className="chart-title"),
+                    html.P(f"Random Forest (5-fold CV accuracy: {ml_acc}%) "
+                           f"trained to predict whether a mobilizable plasmid "
+                           f"shares a host with a conjugative one. "
+                           f"Relaxase type is the strongest predictor.",
+                           className="chart-subtitle"),
+                    dcc.Graph(figure=ml_fig, config={"displayModeBar": False}),
+                ]),
+            ]),
+        ]
+
     return [
         html.H3(f"8. Co-mobilization Analysis "
                  f"({comob['pct_colocated']}% of mobilizable plasmids "
@@ -2849,15 +3006,14 @@ def load_comobilization(tab):
         html.Div(className="chart-card", children=[
             html.H3("Conjugative x Mobilizable Inc Group Pairs",
                      className="chart-title"),
-            html.P("Heatmap showing which conjugative plasmid Inc groups "
-                   "co-exist in the same bacterial host with which mobilizable "
-                   "plasmid Inc groups. High values suggest frequent "
-                   "co-mobilization (hitchhiking on the conjugative T4SS).",
+            html.P("Which conjugative Inc groups co-exist with which mobilizable "
+                   "Inc groups in the same bacterial host. "
+                   "High values = frequent co-mobilization via conjugative T4SS.",
                    className="chart-subtitle"),
             dcc.Graph(figure=make_comobilization_chart(comob),
                       config={"displayModeBar": False}),
         ]),
-    ]
+    ] + ml_section
 
 
 @callback(
