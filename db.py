@@ -893,6 +893,72 @@ def analytics_simpson_paradox():
     return sorted(paradoxes, key=lambda x: -x["spread"])[:15]
 
 
+# ── PubMed / network / clustering queries ──────────────────────────
+
+def pubmed_stats():
+    """Count plasmids with associated PMIDs and top cited PMIDs."""
+    total = scalar("SELECT COUNT(*) FROM typing WHERE associated_pmid != ''") or 0
+    # Top PMIDs by frequency
+    rows = q("SELECT associated_pmid FROM typing WHERE associated_pmid != ''")
+    pmid_counts = {}
+    for r in rows:
+        for pmid in r["associated_pmid"].split(";"):
+            pmid = pmid.strip()
+            if pmid:
+                pmid_counts[pmid] = pmid_counts.get(pmid, 0) + 1
+    top = sorted(pmid_counts.items(), key=lambda x: -x[1])[:20]
+    return {"total_with_pmid": total, "top_pmids": top}
+
+
+def amr_cooccurrence(min_count=50):
+    """
+    AMR gene co-occurrence: which resistance genes appear together
+    on the same plasmid. Returns list of (gene1, gene2, count).
+    """
+    rows = q("""
+        SELECT a1.gene_symbol AS gene1, a2.gene_symbol AS gene2,
+               COUNT(DISTINCT a1.NUCCORE_ACC) AS cnt
+        FROM amr a1
+        JOIN amr a2 ON a1.NUCCORE_ACC = a2.NUCCORE_ACC
+        WHERE a1.gene_symbol < a2.gene_symbol
+          AND a1.drug_class != '' AND a2.drug_class != ''
+          AND a1.gene_symbol != '' AND a2.gene_symbol != ''
+        GROUP BY a1.gene_symbol, a2.gene_symbol
+        HAVING cnt >= ?
+        ORDER BY cnt DESC
+        LIMIT 100
+    """, (min_count,))
+    return rows
+
+
+def host_species_sharing():
+    """
+    Which host species share the same plasmid Inc groups.
+    Returns co-occurrence data for a network.
+    """
+    rows = q("""
+        SELECT t1.TAXONOMY_genus AS genus1, t2.TAXONOMY_genus AS genus2,
+               ty.rep_type, COUNT(*) AS cnt
+        FROM nuccore n1
+        JOIN taxonomy t1 ON n1.TAXONOMY_UID = t1.TAXONOMY_UID
+        JOIN typing ty ON n1.NUCCORE_ACC = ty.NUCCORE_ACC
+        JOIN nuccore n2 ON n2.TAXONOMY_UID != n1.TAXONOMY_UID
+        JOIN taxonomy t2 ON n2.TAXONOMY_UID = t2.TAXONOMY_UID
+        JOIN typing ty2 ON n2.NUCCORE_ACC = ty2.NUCCORE_ACC
+        WHERE t1.TAXONOMY_genus < t2.TAXONOMY_genus
+          AND ty.rep_type = ty2.rep_type
+          AND ty.rep_type != ''
+          AND t1.TAXONOMY_genus IN ('Escherichia','Klebsiella','Salmonella',
+                                    'Enterococcus','Staphylococcus','Acinetobacter')
+          AND t2.TAXONOMY_genus IN ('Escherichia','Klebsiella','Salmonella',
+                                    'Enterococcus','Staphylococcus','Acinetobacter')
+        GROUP BY t1.TAXONOMY_genus, t2.TAXONOMY_genus
+        ORDER BY cnt DESC
+        LIMIT 30
+    """)
+    return rows
+
+
 # ── Plasmid viewer lookup ──────────────────────────────────────────
 
 def plasmid_summary(accession):

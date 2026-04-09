@@ -1786,6 +1786,61 @@ def make_inc_trends_chart():
     return fig
 
 
+def make_amr_cooccurrence_chart():
+    """Heatmap of AMR gene co-occurrence on the same plasmid."""
+    rows = db.amr_cooccurrence(min_count=100)
+    if not rows:
+        return go.Figure()
+
+    # Build matrix from top gene pairs
+    genes = set()
+    for r in rows[:50]:
+        genes.add(r["gene1"])
+        genes.add(r["gene2"])
+    genes = sorted(genes)
+
+    matrix = {g: {g2: 0 for g2 in genes} for g in genes}
+    for r in rows:
+        if r["gene1"] in matrix and r["gene2"] in matrix:
+            matrix[r["gene1"]][r["gene2"]] = r["cnt"]
+            matrix[r["gene2"]][r["gene1"]] = r["cnt"]
+
+    z = [[matrix[g1][g2] for g2 in genes] for g1 in genes]
+    fig = go.Figure(go.Heatmap(
+        z=z, x=genes, y=genes,
+        colorscale="YlOrRd",
+        hovertemplate="<b>%{y}</b> + <b>%{x}</b><br>Co-occur: %{z} plasmids<extra></extra>",
+    ))
+    fig.update_layout(
+        template=PLOTLY_TEMPLATE, paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)", font_color=COLORS["text"],
+        margin=dict(t=10, b=10, l=10, r=10), height=550,
+        xaxis=dict(tickangle=-45, tickfont=dict(size=8)),
+        yaxis=dict(tickfont=dict(size=8), autorange="reversed"),
+    )
+    return fig
+
+
+def make_pubmed_chart():
+    """Bar chart of most-cited PMIDs in the database."""
+    stats = db.pubmed_stats()
+    if not stats or not stats["top_pmids"]:
+        return go.Figure()
+
+    df = pd.DataFrame(stats["top_pmids"], columns=["PMID", "Plasmids"])
+    df["PMID"] = df["PMID"].astype(str)
+    fig = px.bar(df.head(15), x="Plasmids", y="PMID", orientation="h",
+                 color_discrete_sequence=[COLORS["accent2"]])
+    fig.update_layout(
+        template=PLOTLY_TEMPLATE, paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)", font_color=COLORS["text"],
+        margin=dict(t=10, b=30, l=10, r=10), height=400,
+        yaxis=dict(autorange="reversed"),
+        xaxis_title="Plasmids referencing this PMID", yaxis_title="PubMed ID",
+    )
+    return fig
+
+
 # ---------------------------------------------------------------------------
 # Layout
 # ---------------------------------------------------------------------------
@@ -2475,6 +2530,35 @@ def analytics_tab():
                        "(or vice versa). This reveals confounding by species composition.",
                        className="chart-subtitle"),
                 make_simpson_paradox_table(),
+            ]),
+        ]),
+
+        # --- 6. AMR Co-occurrence Network ---
+        html.Div(className="correlation-section", children=[
+            html.H3("6. AMR Gene Co-occurrence Network",
+                     className="correlation-heading"),
+            html.Div(className="chart-card", children=[
+                html.H3("Which Resistance Genes Travel Together",
+                         className="chart-title"),
+                html.P("Heatmap showing AMR genes co-occurring on the same plasmid "
+                       "(min 100 co-occurrences). Hot spots reveal "
+                       "multi-drug resistance cassettes.",
+                       className="chart-subtitle"),
+                dcc.Graph(figure=make_amr_cooccurrence_chart(),
+                          config={"displayModeBar": False}),
+            ]),
+        ]),
+
+        # --- 7. PubMed References ---
+        html.Div(className="correlation-section", children=[
+            html.H3("7. PubMed References",
+                     className="correlation-heading"),
+            html.Div(className="chart-card", children=[
+                html.H3("Most-Referenced Publications", className="chart-title"),
+                html.P("PubMed IDs most frequently associated with plasmids in PLSDB.",
+                       className="chart-subtitle"),
+                dcc.Graph(figure=make_pubmed_chart(),
+                          config={"displayModeBar": False}),
             ]),
         ]),
     ])
