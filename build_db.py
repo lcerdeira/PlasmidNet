@@ -493,14 +493,77 @@ def main():
         cur.execute("CREATE INDEX idx_pgap_cat ON pgap_features(category)")
     conn.commit()
 
+    # ── 9. ncbi_extra (plasmids from NCBI not in PLSDB) ──────────────
+    ncbi_path = os.path.join(RAW_DIR, "ncbi_plasmids.csv")
+    if os.path.exists(ncbi_path):
+        print("Loading ncbi_plasmids.csv ...")
+        cur.execute("""
+            CREATE TABLE ncbi_extra (
+                accession    TEXT PRIMARY KEY,
+                description  TEXT,
+                length       INTEGER,
+                topology     TEXT,
+                create_date  TEXT,
+                organism     TEXT,
+                taxid        INTEGER
+            )
+        """)
+        with open(ncbi_path, newline="") as f:
+            reader = csv.DictReader(f)
+            rows = 0
+            batch = []
+            for row in reader:
+                batch.append((
+                    row.get("accession", ""),
+                    row.get("description", ""),
+                    _int(row.get("length")),
+                    row.get("topology", ""),
+                    row.get("create_date", ""),
+                    row.get("organism", ""),
+                    _int(row.get("taxid")),
+                ))
+                rows += 1
+                if len(batch) >= 5000:
+                    cur.executemany(
+                        "INSERT OR IGNORE INTO ncbi_extra VALUES (?,?,?,?,?,?,?)",
+                        batch)
+                    batch = []
+            if batch:
+                cur.executemany(
+                    "INSERT OR IGNORE INTO ncbi_extra VALUES (?,?,?,?,?,?,?)",
+                    batch)
+        cur.execute("CREATE INDEX idx_ncbi_date ON ncbi_extra(create_date)")
+        cur.execute("CREATE INDEX idx_ncbi_org ON ncbi_extra(organism)")
+        conn.commit()
+        print(f"  {rows:,} NCBI extra plasmids")
+    else:
+        print("ncbi_plasmids.csv not found - run ncbi_harvest.py first")
+
     # ── Stats ───────────────────────────────────────────────────────
     print("\n=== Database Summary ===")
-    tables = ["nuccore", "taxonomy", "typing", "amr", "plasmidfinder", "typing_markers"]
+    tables = ["nuccore", "taxonomy", "typing", "amr", "plasmidfinder",
+              "typing_markers"]
     if os.path.exists(pgap_path):
         tables.append("pgap_features")
+    tables.append("biosample_location")
+    if os.path.exists(ncbi_path):
+        tables.append("ncbi_extra")
     for table in tables:
-        count = cur.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-        print(f"  {table:20s} {count:>10,} rows")
+        try:
+            count = cur.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            print(f"  {table:20s} {count:>10,} rows")
+        except Exception:
+            pass
+
+    # Total unique plasmids
+    plsdb_count = cur.execute("SELECT COUNT(*) FROM nuccore").fetchone()[0]
+    ncbi_count = 0
+    try:
+        ncbi_count = cur.execute("SELECT COUNT(*) FROM ncbi_extra").fetchone()[0]
+    except Exception:
+        pass
+    print(f"\n  Total unique plasmids: {plsdb_count + ncbi_count:,} "
+          f"(PLSDB {plsdb_count:,} + NCBI {ncbi_count:,})")
 
     conn.close()
     size_mb = os.path.getsize(DB_PATH) / 1e6

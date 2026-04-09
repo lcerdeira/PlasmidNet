@@ -49,6 +49,15 @@ def scalar(sql, params=()):
 
 # ── Overview stats ──────────────────────────────────────────────────
 
+def has_ncbi_extra():
+    """Check if ncbi_extra table exists."""
+    try:
+        scalar("SELECT COUNT(*) FROM ncbi_extra")
+        return True
+    except Exception:
+        return False
+
+
 def overview_stats():
     total = scalar("SELECT COUNT(*) FROM nuccore")
     circular = scalar("SELECT COUNT(*) FROM nuccore WHERE NUCCORE_Topology='circular'")
@@ -75,6 +84,7 @@ def overview_stats():
         "total_virulence_factors": total_vir,
         "total_amr": total_amr,
         "total_bgcs": 0,
+        "ncbi_extra": scalar("SELECT COUNT(*) FROM ncbi_extra") if has_ncbi_extra() else 0,
     }
 
 

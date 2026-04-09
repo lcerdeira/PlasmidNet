@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Heroku post-compile hook: download PLSDB CSVs and build SQLite DB
+# Heroku post-compile hook: download PLSDB CSVs, harvest NCBI, build SQLite DB
 set -e
 
-echo "-----> Building PLSDB SQLite database..."
+echo "-----> Building PLSDB + NCBI SQLite database..."
 
 mkdir -p data/raw
 
@@ -23,7 +23,7 @@ echo "       Downloading biosample.csv..."
 curl -sL -o data/raw/biosample.csv "https://ndownloader.figshare.com/files/49859712"
 
 # Download and filter proteins.csv for TA/phage/transposase genes
-echo "       Downloading + filtering proteins.csv (637 MB → ~60 MB filtered)..."
+echo "       Downloading + filtering proteins.csv (637 MB -> ~60 MB filtered)..."
 curl -sL "https://ndownloader.figshare.com/files/49859766" | \
   python -c "
 import sys, csv
@@ -50,10 +50,14 @@ for row in reader:
 " > data/raw/pgap_filtered.csv
 echo "       Filtered $(wc -l < data/raw/pgap_filtered.csv) PGAP rows"
 
+# Harvest new plasmids from NCBI not in PLSDB
+echo "       Harvesting complete plasmids from NCBI..."
+python ncbi_harvest.py || echo "       NCBI harvest failed (non-fatal)"
+
 echo "       Building SQLite database..."
 python build_db.py
 
 # Clean up raw files to save slug space
 rm -rf data/raw
 
-echo "-----> PLSDB database ready!"
+echo "-----> Database ready!"
