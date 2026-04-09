@@ -266,7 +266,102 @@ def main():
     conn.commit()
     print(f"  {rows:,} typing marker entries")
 
-    # ── 7. pgap_features (TA, phage, transposase from proteins.csv) ─
+    # ── 7. biosample_location (geographic data) ──────────────────────
+    bio_path = os.path.join(RAW_DIR, "biosample.csv")
+    if os.path.exists(bio_path):
+        print("Loading biosample.csv (locations) ...")
+        cur.execute("""
+            CREATE TABLE biosample_location (
+                BIOSAMPLE_UID INTEGER PRIMARY KEY,
+                lat REAL, lng REAL,
+                location_raw TEXT, country TEXT, ecosystem TEXT
+            )
+        """)
+
+        COUNTRY_BOUNDS = {
+            "USA": (24, 50, -125, -66), "China": (18, 54, 73, 135),
+            "Japan": (24, 46, 123, 146), "South Korea": (33, 39, 124, 132),
+            "India": (6, 36, 68, 98), "United Kingdom": (49, 61, -11, 2),
+            "Germany": (47, 55, 5, 16), "France": (41, 51, -5, 10),
+            "Spain": (36, 44, -10, 5), "Brazil": (-34, 6, -74, -34),
+            "Australia": (-44, -10, 113, 154), "Canada": (42, 72, -141, -52),
+            "Taiwan": (21, 26, 119, 123), "Thailand": (5, 21, 97, 106),
+            "Myanmar": (9, 29, 92, 102), "Bangladesh": (20, 27, 88, 93),
+            "Denmark": (54, 58, 8, 16), "Switzerland": (45, 48, 5, 11),
+            "Netherlands": (50, 54, 3, 8), "Italy": (36, 47, 6, 19),
+            "Sweden": (55, 70, 10, 25), "Russia": (41, 82, 19, 180),
+            "Mexico": (14, 33, -118, -86), "Vietnam": (8, 24, 102, 110),
+            "Indonesia": (-11, 6, 95, 141), "Singapore": (1, 2, 103, 104),
+            "Israel": (29, 34, 34, 36), "Turkey": (35, 42, 25, 45),
+            "Colombia": (-5, 14, -82, -66), "Nigeria": (4, 14, 2, 15),
+            "South Africa": (-35, -22, 16, 33), "Kenya": (-5, 6, 33, 42),
+            "Egypt": (22, 32, 24, 37), "Pakistan": (23, 37, 60, 78),
+            "Iran": (25, 40, 44, 64), "Argentina": (-55, -21, -74, -53),
+            "Norway": (57, 72, 4, 32), "Poland": (49, 55, 14, 25),
+            "Belgium": (49, 52, 2, 7), "Portugal": (36, 42, -10, -6),
+            "Greece": (34, 42, 19, 30), "Saudi Arabia": (16, 33, 34, 56),
+            "Philippines": (4, 21, 116, 127), "Malaysia": (0, 8, 99, 120),
+            "New Zealand": (-47, -34, 166, 179),
+        }
+        COUNTRY_FIXES = {
+            "United States": "USA", "United States of America": "USA",
+            "Republic of Korea": "South Korea", "Korea": "South Korea",
+            "United Kingdom of Great Britain and Northern Ireland": "United Kingdom",
+            "Viet Nam": "Vietnam", "Russian Federation": "Russia",
+            "Brasil": "Brazil", "Czech Republic": "Czechia",
+        }
+
+        def _normalize_country(raw, lat, lng):
+            if not raw:
+                return ""
+            parts = raw.split(",")
+            country = parts[0].strip()
+            if len(country) > 25:
+                # Try lat/lng lookup
+                for c, (la1, la2, lo1, lo2) in COUNTRY_BOUNDS.items():
+                    if la1 <= lat <= la2 and lo1 <= lng <= lo2:
+                        return c
+                return ""
+            return COUNTRY_FIXES.get(country, country)
+
+        batch = []
+        rows = 0
+        with open(bio_path, newline="") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                buid = row.get("BIOSAMPLE_UID", "")
+                try:
+                    buid = int(float(buid))
+                except (ValueError, TypeError):
+                    continue
+                lat_s = row.get("LOCATION_lat", "").strip()
+                lng_s = row.get("LOCATION_lng", "").strip()
+                loc_raw = row.get("LOCATION_name", "").strip()
+                eco = row.get("ECOSYSTEM_tags", "").strip()
+                if lat_s and lng_s and loc_raw:
+                    try:
+                        lat_f, lng_f = float(lat_s), float(lng_s)
+                    except ValueError:
+                        continue
+                    country = _normalize_country(loc_raw, lat_f, lng_f)
+                    if country:
+                        batch.append((buid, lat_f, lng_f, loc_raw, country, eco))
+                        rows += 1
+                        if len(batch) >= 5000:
+                            cur.executemany(
+                                "INSERT OR IGNORE INTO biosample_location VALUES (?,?,?,?,?,?)",
+                                batch)
+                            batch = []
+        if batch:
+            cur.executemany(
+                "INSERT OR IGNORE INTO biosample_location VALUES (?,?,?,?,?,?)", batch)
+        cur.execute("CREATE INDEX idx_bsloc_country ON biosample_location(country)")
+        conn.commit()
+        print(f"  {rows:,} biosample locations")
+    else:
+        print("biosample.csv not found, skipping location data")
+
+    # ── 8. pgap_features (TA, phage, transposase from proteins.csv) ─
     pgap_path = os.path.join(RAW_DIR, "pgap_filtered.csv")
     if os.path.exists(pgap_path):
         print("Loading pgap_filtered.csv ...")

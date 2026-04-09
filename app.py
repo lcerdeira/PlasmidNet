@@ -1088,6 +1088,178 @@ def _make_gene_frequency_chart(data_key, title_label, bar_color):
 
 
 # ---------------------------------------------------------------------------
+# Geography charts
+# ---------------------------------------------------------------------------
+
+def make_global_map():
+    """Scatter map of plasmid reports coloured by predicted mobility."""
+    geo = db.geo_plasmid_data()
+    if not geo:
+        return go.Figure()
+
+    df = pd.DataFrame(geo)
+    mob_colors = {
+        "conjugative": COLORS["accent3"],
+        "mobilizable": COLORS["accent"],
+        "non-mobilizable": COLORS["accent4"],
+    }
+    fig = px.scatter_geo(
+        df, lat="lat", lon="lng", color="predicted_mobility",
+        hover_name="NUCCORE_ACC",
+        hover_data={"country": True, "rep_type": True, "predicted_mobility": True,
+                    "lat": False, "lng": False},
+        color_discrete_map=mob_colors,
+        opacity=0.5, size_max=8,
+        projection="natural earth",
+    )
+    fig.update_layout(
+        template=PLOTLY_TEMPLATE,
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font_color=COLORS["text"],
+        margin=dict(t=10, b=10, l=10, r=10), height=550,
+        geo=dict(
+            showland=True, landcolor="#f0ebe3",
+            showocean=True, oceancolor="#e8f4f8",
+            showcountries=True, countrycolor="#cbd5e1",
+            showcoastlines=True, coastlinecolor="#94a3b8",
+        ),
+        legend=dict(orientation="h", yanchor="top", y=-0.02,
+                    xanchor="center", x=0.5, font_size=11),
+    )
+    return fig
+
+
+def make_country_mobility_chart():
+    """Stacked bar: mobility distribution by top 20 countries."""
+    geo_summary = db.geo_country_summary()
+    if not geo_summary:
+        return go.Figure()
+
+    # Aggregate by country
+    country_mob = {}
+    for r in geo_summary:
+        c = r["country"]
+        m = r["predicted_mobility"] or "unknown"
+        country_mob.setdefault(c, {})
+        country_mob[c][m] = country_mob[c].get(m, 0) + r["cnt"]
+
+    # Top 20 by total
+    top = sorted(country_mob.items(),
+                 key=lambda x: sum(x[1].values()), reverse=True)[:20]
+    countries = [c for c, _ in top]
+
+    mob_types = ["conjugative", "mobilizable", "non-mobilizable"]
+    mob_colors = [COLORS["accent3"], COLORS["accent"], COLORS["accent4"]]
+
+    fig = go.Figure()
+    for mob, color in zip(mob_types, mob_colors):
+        vals = [country_mob[c].get(mob, 0) for c in countries]
+        fig.add_trace(go.Bar(x=countries, y=vals, name=mob.capitalize(),
+                             marker_color=color))
+    fig.update_layout(
+        template=PLOTLY_TEMPLATE,
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font_color=COLORS["text"],
+        margin=dict(t=10, b=10, l=10, r=10), height=450,
+        barmode="stack", xaxis_title="", yaxis_title="Plasmid Count",
+        xaxis_tickangle=-45,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02,
+                    xanchor="right", x=1, font_size=11),
+    )
+    return fig
+
+
+def make_country_inc_chart():
+    """Heatmap: top Inc groups vs top countries."""
+    country_inc = db.geo_country_inc_top(15)
+    if not country_inc:
+        return go.Figure()
+
+    # Get top Inc groups across all countries
+    all_inc = {}
+    for country, incs in country_inc.items():
+        for inc, cnt in incs.items():
+            all_inc[inc] = all_inc.get(inc, 0) + cnt
+    top_inc = sorted(all_inc, key=all_inc.get, reverse=True)[:12]
+    countries = sorted(country_inc.keys(),
+                       key=lambda c: sum(country_inc[c].values()), reverse=True)
+
+    z = [[country_inc[c].get(inc, 0) for inc in top_inc] for c in countries]
+
+    fig = go.Figure(go.Heatmap(
+        z=z, x=top_inc, y=countries,
+        colorscale="YlGnBu", texttemplate="%{z}",
+        textfont={"size": 9},
+        hovertemplate="Country: <b>%{y}</b><br>Inc: <b>%{x}</b><br>Count: %{z}<extra></extra>",
+    ))
+    fig.update_layout(
+        template=PLOTLY_TEMPLATE,
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font_color=COLORS["text"],
+        margin=dict(t=10, b=10, l=10, r=10), height=500,
+        xaxis=dict(tickangle=-45), yaxis=dict(autorange="reversed"),
+    )
+    return fig
+
+
+def make_temporal_animation():
+    """Animated scatter map: plasmid reports by year."""
+    temporal = db.geo_temporal_data()
+    if not temporal:
+        return go.Figure()
+
+    df = pd.DataFrame(temporal)
+    df["year"] = df["year"].astype(str)
+
+    # Cumulative counts per country per year
+    all_years = sorted(df["year"].unique())
+    cumulative_rows = []
+    country_totals = {}
+    for year in all_years:
+        year_data = df[df["year"] == year]
+        for _, row in year_data.iterrows():
+            c = row["country"]
+            country_totals[c] = country_totals.get(c, 0) + row["cnt"]
+        # Add all countries seen so far for this frame
+        for c, total in country_totals.items():
+            lat_row = df[df["country"] == c].iloc[0]
+            cumulative_rows.append({
+                "year": year, "country": c,
+                "lat": lat_row["lat"], "lng": lat_row["lng"],
+                "cumulative": total,
+            })
+
+    cum_df = pd.DataFrame(cumulative_rows)
+
+    fig = px.scatter_geo(
+        cum_df, lat="lat", lon="lng",
+        size="cumulative", color="cumulative",
+        hover_name="country",
+        hover_data={"cumulative": True, "year": True, "lat": False, "lng": False},
+        animation_frame="year",
+        color_continuous_scale="YlOrRd",
+        size_max=40,
+        projection="natural earth",
+    )
+    fig.update_layout(
+        template=PLOTLY_TEMPLATE,
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font_color=COLORS["text"],
+        margin=dict(t=30, b=10, l=10, r=10), height=600,
+        geo=dict(
+            showland=True, landcolor="#f0ebe3",
+            showocean=True, oceancolor="#e8f4f8",
+            showcountries=True, countrycolor="#cbd5e1",
+            showcoastlines=True, coastlinecolor="#94a3b8",
+        ),
+        coloraxis_colorbar=dict(title="Plasmids"),
+    )
+    fig.layout.updatemenus[0].buttons[0].args[1]["frame"]["duration"] = 800
+    fig.layout.updatemenus[0].buttons[0].args[1]["transition"]["duration"] = 400
+    return fig
+
+
+# ---------------------------------------------------------------------------
 # Layout
 # ---------------------------------------------------------------------------
 
@@ -1125,6 +1297,7 @@ TABS = html.Div(className="tabs-container", children=[
             dcc.Tab(label="Plasmid Viewer", value="viewer", className="tab", selected_className="tab--selected"),
             dcc.Tab(label="Inc Groups & Mobility", value="mobility", className="tab", selected_className="tab--selected"),
             dcc.Tab(label="Correlations", value="correlations", className="tab", selected_className="tab--selected"),
+            dcc.Tab(label="Geography", value="geography", className="tab", selected_className="tab--selected"),
             dcc.Tab(label="Plasmid Lookup", value="lookup", className="tab", selected_className="tab--selected"),
         ],
     ),
@@ -1535,6 +1708,68 @@ def correlations_tab():
     ])
 
 
+def geography_tab():
+    return html.Div(className="tab-content", children=[
+        html.Div(className="section-header", children=[
+            html.H2("Geographic Distribution", className="section-title"),
+            html.P("Plasmid reports across 57,751 geolocated plasmids from PLSDB",
+                   className="chart-subtitle"),
+        ]),
+
+        # --- 1. Global map ---
+        html.Div(className="correlation-section", children=[
+            html.H3("1. Global Plasmid Map by Mobility",
+                     className="correlation-heading"),
+            html.Div(className="chart-card", children=[
+                html.P("Each dot is a plasmid coloured by predicted mobility. "
+                       "Hover to see accession, country, and Inc group.",
+                       className="chart-subtitle"),
+                dcc.Graph(figure=make_global_map(),
+                          config={"scrollZoom": True}),
+            ]),
+        ]),
+
+        # --- 2. Country comparison ---
+        html.Div(className="correlation-section", children=[
+            html.H3("2. Country Comparison",
+                     className="correlation-heading"),
+            html.Div(className="chart-grid-2", children=[
+                html.Div(className="chart-card", children=[
+                    html.H3("Mobility by Country (Top 20)",
+                             className="chart-title"),
+                    html.P("Conjugative, mobilizable, and non-mobilizable "
+                           "plasmid counts per country",
+                           className="chart-subtitle"),
+                    dcc.Graph(figure=make_country_mobility_chart(),
+                              config={"displayModeBar": False}),
+                ]),
+                html.Div(className="chart-card", children=[
+                    html.H3("Inc Groups by Country",
+                             className="chart-title"),
+                    html.P("Incompatibility group distribution across "
+                           "top reporting countries",
+                           className="chart-subtitle"),
+                    dcc.Graph(figure=make_country_inc_chart(),
+                              config={"displayModeBar": False}),
+                ]),
+            ]),
+        ]),
+
+        # --- 3. Temporal animation ---
+        html.Div(className="correlation-section", children=[
+            html.H3("3. Temporal Spread Animation",
+                     className="correlation-heading"),
+            html.Div(className="chart-card", children=[
+                html.P("Animated timeline of cumulative plasmid reports per "
+                       "country. Press play to watch the global spread.",
+                       className="chart-subtitle"),
+                dcc.Graph(figure=make_temporal_animation(),
+                          config={"scrollZoom": True}),
+            ]),
+        ]),
+    ])
+
+
 def lookup_tab():
     return html.Div(className="tab-content", children=[
         html.Div(className="chart-card", children=[
@@ -1600,6 +1835,8 @@ def render_tab(tab):
         return mobility_tab()
     elif tab == "correlations":
         return correlations_tab()
+    elif tab == "geography":
+        return geography_tab()
     elif tab == "lookup":
         return lookup_tab()
     return overview_tab()

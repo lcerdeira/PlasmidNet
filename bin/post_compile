@@ -19,6 +19,8 @@ echo "       Downloading plasmidfinder.csv..."
 curl -sL -o data/raw/plasmidfinder.csv "https://ndownloader.figshare.com/files/51520805"
 echo "       Downloading typing_markers.csv..."
 curl -sL -o data/raw/typing_markers.csv "https://ndownloader.figshare.com/files/49859751"
+echo "       Downloading biosample.csv..."
+curl -sL -o data/raw/biosample.csv "https://ndownloader.figshare.com/files/49859712"
 
 # Download and filter proteins.csv for TA/phage/transposase genes
 echo "       Downloading + filtering proteins.csv (637 MB → ~60 MB filtered)..."

@@ -493,6 +493,101 @@ def build_correlations():
     }
 
 
+# ── Geography queries ──────────────────────────────────────────────
+
+def geo_plasmid_data():
+    """
+    Return per-plasmid geographic data joined with typing and AMR info.
+    Used for global maps, country comparisons, and temporal animations.
+    """
+    rows = q("""
+        SELECT
+            n.NUCCORE_ACC, n.NUCCORE_CreateDate,
+            SUBSTR(n.NUCCORE_CreateDate, 1, 4) AS year,
+            b.lat, b.lng, b.country,
+            t.rep_type, t.predicted_mobility, t.mpf_type, t.relaxase_type
+        FROM nuccore n
+        JOIN biosample_location b ON n.BIOSAMPLE_UID = b.BIOSAMPLE_UID
+        JOIN typing t ON n.NUCCORE_ACC = t.NUCCORE_ACC
+        WHERE b.country != '' AND b.lat IS NOT NULL
+    """)
+    return rows
+
+
+def geo_country_summary():
+    """Plasmid counts per country with Inc/mobility breakdown."""
+    rows = q("""
+        SELECT b.country, t.predicted_mobility, COUNT(*) AS cnt
+        FROM nuccore n
+        JOIN biosample_location b ON n.BIOSAMPLE_UID = b.BIOSAMPLE_UID
+        JOIN typing t ON n.NUCCORE_ACC = t.NUCCORE_ACC
+        WHERE b.country != ''
+        GROUP BY b.country, t.predicted_mobility
+        ORDER BY cnt DESC
+    """)
+    return rows
+
+
+def geo_country_inc_top(limit=15):
+    """Top Inc groups per country (top countries only)."""
+    rows = q("""
+        SELECT b.country, t.rep_type, COUNT(*) AS cnt
+        FROM nuccore n
+        JOIN biosample_location b ON n.BIOSAMPLE_UID = b.BIOSAMPLE_UID
+        JOIN typing t ON n.NUCCORE_ACC = t.NUCCORE_ACC
+        WHERE b.country != '' AND t.rep_type != ''
+        GROUP BY b.country
+        ORDER BY cnt DESC
+        LIMIT ?
+    """, (limit,))
+    # Get top countries
+    top_countries = [r["country"] for r in rows]
+
+    # Now get Inc distribution for those countries
+    if not top_countries:
+        return {}
+    placeholders = ",".join("?" * len(top_countries))
+    detail = q(f"""
+        SELECT b.country, t.rep_type
+        FROM nuccore n
+        JOIN biosample_location b ON n.BIOSAMPLE_UID = b.BIOSAMPLE_UID
+        JOIN typing t ON n.NUCCORE_ACC = t.NUCCORE_ACC
+        WHERE b.country IN ({placeholders}) AND t.rep_type != ''
+    """, tuple(top_countries))
+
+    # Parse comma-separated rep_types
+    result = {}
+    for r in detail:
+        country = r["country"]
+        for rt in r["rep_type"].split(","):
+            rt = rt.strip()
+            if rt:
+                result.setdefault(country, {})
+                result[country][rt] = result[country].get(rt, 0) + 1
+    return result
+
+
+def geo_temporal_data(feature_filter=None):
+    """
+    Year-by-year plasmid appearance per country for animation.
+    Returns list of dicts with year, country, lat, lng, count.
+    """
+    rows = q("""
+        SELECT
+            SUBSTR(n.NUCCORE_CreateDate, 1, 4) AS year,
+            b.country, b.lat, b.lng,
+            COUNT(*) AS cnt
+        FROM nuccore n
+        JOIN biosample_location b ON n.BIOSAMPLE_UID = b.BIOSAMPLE_UID
+        WHERE b.country != '' AND b.lat IS NOT NULL
+          AND LENGTH(n.NUCCORE_CreateDate) >= 4
+          AND CAST(SUBSTR(n.NUCCORE_CreateDate, 1, 4) AS INTEGER) >= 2000
+        GROUP BY year, b.country
+        ORDER BY year, cnt DESC
+    """)
+    return rows
+
+
 # ── Plasmid viewer lookup ──────────────────────────────────────────
 
 def plasmid_summary(accession):
