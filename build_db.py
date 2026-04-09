@@ -274,7 +274,8 @@ def main():
             CREATE TABLE biosample_location (
                 BIOSAMPLE_UID INTEGER PRIMARY KEY,
                 lat REAL, lng REAL,
-                location_raw TEXT, country TEXT, ecosystem TEXT
+                location_raw TEXT, country TEXT, ecosystem TEXT,
+                host_category TEXT
             )
         """)
 
@@ -324,6 +325,46 @@ def main():
                 return ""
             return COUNTRY_FIXES.get(country, country)
 
+        HUMAN_TAXIDS = {9606}
+        ANIMAL_TAXIDS = {9823, 9913, 9031, 9615, 9685, 9940, 9796, 8839,
+                         9825, 10090, 7460, 8030, 9986, 9598, 9544}
+
+        def _classify_host(eco, pkg, taxid):
+            eco_l = eco.lower()
+            pkg_l = pkg.lower()
+            if taxid in HUMAN_TAXIDS:
+                return "Human"
+            if taxid in ANIMAL_TAXIDS:
+                return "Animal"
+            if "clinical" in pkg_l or "human-associated" in pkg_l:
+                return "Human"
+            if any(k in eco_l for k in ("blood", "urinary", "respiratory",
+                                         "circulatory")):
+                return "Human"
+            if any(k in eco_l for k in ("fecal", "gastrointestinal", "rectal")):
+                return "Human" if taxid in HUMAN_TAXIDS or taxid < 0 else "Animal"
+            if "host_associated" in eco_l:
+                return "Human" if taxid in HUMAN_TAXIDS or taxid < 0 else "Animal"
+            if any(k in eco_l for k in ("soil", "terrestrial", "rhizosphere")):
+                return "Soil"
+            if any(k in eco_l for k in ("aquatic", "water", "wastewater",
+                                         "marine", "freshwater")):
+                return "Water"
+            if any(k in eco_l for k in ("food", "meat", "dairy", "fermented",
+                                         "drink", "milk")):
+                return "Food"
+            if any(k in eco_l for k in ("farm", "manure", "livestock")):
+                return "Animal"
+            if any(k in eco_l for k in ("hospital", "anthropogenic")):
+                return "Environment"
+            if any(k in pkg_l for k in ("environmental", "wastewater")):
+                return "Environment"
+            if "water" in pkg_l:
+                return "Water"
+            if "soil" in pkg_l:
+                return "Soil"
+            return "Other"
+
         batch = []
         rows = 0
         with open(bio_path, newline="") as f:
@@ -338,24 +379,34 @@ def main():
                 lng_s = row.get("LOCATION_lng", "").strip()
                 loc_raw = row.get("LOCATION_name", "").strip()
                 eco = row.get("ECOSYSTEM_tags", "").strip()
+                pkg = row.get("BIOSAMPLE_package", "").strip()
+                taxid = -1
+                try:
+                    taxid = int(float(row.get("ECOSYSTEM_taxid", -1)))
+                except (ValueError, TypeError):
+                    pass
                 if lat_s and lng_s and loc_raw:
                     try:
                         lat_f, lng_f = float(lat_s), float(lng_s)
                     except ValueError:
                         continue
                     country = _normalize_country(loc_raw, lat_f, lng_f)
+                    host_cat = _classify_host(eco, pkg, taxid)
                     if country:
-                        batch.append((buid, lat_f, lng_f, loc_raw, country, eco))
+                        batch.append((buid, lat_f, lng_f, loc_raw, country,
+                                      eco, host_cat))
                         rows += 1
                         if len(batch) >= 5000:
                             cur.executemany(
-                                "INSERT OR IGNORE INTO biosample_location VALUES (?,?,?,?,?,?)",
-                                batch)
+                                "INSERT OR IGNORE INTO biosample_location "
+                                "VALUES (?,?,?,?,?,?,?)", batch)
                             batch = []
         if batch:
             cur.executemany(
-                "INSERT OR IGNORE INTO biosample_location VALUES (?,?,?,?,?,?)", batch)
+                "INSERT OR IGNORE INTO biosample_location VALUES (?,?,?,?,?,?,?)",
+                batch)
         cur.execute("CREATE INDEX idx_bsloc_country ON biosample_location(country)")
+        cur.execute("CREATE INDEX idx_bsloc_host ON biosample_location(host_category)")
         conn.commit()
         print(f"  {rows:,} biosample locations")
     else:

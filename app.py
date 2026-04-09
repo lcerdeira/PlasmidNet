@@ -1259,6 +1259,162 @@ def make_temporal_animation():
     return fig
 
 
+def _build_animated_map(raw_data, title_suffix="", color_scale="YlOrRd"):
+    """Generic cumulative animated scatter map builder."""
+    if not raw_data:
+        return go.Figure()
+    df = pd.DataFrame(raw_data)
+    df["year"] = df["year"].astype(str)
+
+    all_years = sorted(df["year"].unique())
+    cumulative_rows = []
+    country_totals = {}
+    for year in all_years:
+        year_data = df[df["year"] == year]
+        for _, row in year_data.iterrows():
+            c = row["country"]
+            country_totals[c] = country_totals.get(c, 0) + row["cnt"]
+        for c, total in country_totals.items():
+            lat_row = df[df["country"] == c].iloc[0]
+            cumulative_rows.append({
+                "year": year, "country": c,
+                "lat": lat_row["lat"], "lng": lat_row["lng"],
+                "cumulative": total,
+            })
+
+    cum_df = pd.DataFrame(cumulative_rows)
+    fig = px.scatter_geo(
+        cum_df, lat="lat", lon="lng",
+        size="cumulative", color="cumulative",
+        hover_name="country",
+        hover_data={"cumulative": True, "year": True, "lat": False, "lng": False},
+        animation_frame="year",
+        color_continuous_scale=color_scale,
+        size_max=40, projection="natural earth",
+    )
+    fig.update_layout(
+        template=PLOTLY_TEMPLATE,
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font_color=COLORS["text"],
+        margin=dict(t=30, b=10, l=10, r=10), height=550,
+        geo=dict(showland=True, landcolor="#f0ebe3",
+                 showocean=True, oceancolor="#e8f4f8",
+                 showcountries=True, countrycolor="#cbd5e1",
+                 showcoastlines=True, coastlinecolor="#94a3b8"),
+        coloraxis_colorbar=dict(title="Plasmids"),
+    )
+    if fig.layout.updatemenus:
+        fig.layout.updatemenus[0].buttons[0].args[1]["frame"]["duration"] = 800
+        fig.layout.updatemenus[0].buttons[0].args[1]["transition"]["duration"] = 400
+    return fig
+
+
+def make_host_distribution_chart():
+    """Donut chart: plasmid host/source categories."""
+    host_counts = db.host_category_counts()
+    if not host_counts:
+        return go.Figure()
+    host_colors = {
+        "Human": "#e74c3c", "Animal": "#f39c12", "Soil": "#8b4513",
+        "Water": "#3498db", "Food": "#2ecc71", "Environment": "#9b59b6",
+    }
+    labels = list(host_counts.keys())
+    values = list(host_counts.values())
+    colors = [host_colors.get(l, "#95a5a6") for l in labels]
+    fig = go.Figure(go.Pie(
+        labels=labels, values=values, hole=0.5,
+        marker_colors=colors, textinfo="label+percent", textfont_size=12,
+        hovertemplate="<b>%{label}</b><br>Plasmids: %{value:,}<extra></extra>",
+    ))
+    fig.update_layout(
+        template=PLOTLY_TEMPLATE, paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)", font_color=COLORS["text"],
+        margin=dict(t=10, b=10, l=10, r=10), height=400, showlegend=False,
+    )
+    return fig
+
+
+def make_host_mobility_chart():
+    """Stacked bar: mobility by host category."""
+    host_mob = db.host_vs_mobility()
+    if not host_mob:
+        return go.Figure()
+    hosts = sorted(host_mob.keys(), key=lambda h: sum(host_mob[h].values()), reverse=True)
+    mob_types = ["conjugative", "mobilizable", "non-mobilizable"]
+    mob_colors = [COLORS["accent3"], COLORS["accent"], COLORS["accent4"]]
+    fig = go.Figure()
+    for mob, color in zip(mob_types, mob_colors):
+        fig.add_trace(go.Bar(
+            x=hosts, y=[host_mob[h].get(mob, 0) for h in hosts],
+            name=mob.capitalize(), marker_color=color,
+        ))
+    fig.update_layout(
+        template=PLOTLY_TEMPLATE, paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)", font_color=COLORS["text"],
+        margin=dict(t=10, b=10, l=10, r=10), height=400,
+        barmode="stack", xaxis_title="", yaxis_title="Plasmid Count",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02,
+                    xanchor="right", x=1, font_size=11),
+    )
+    return fig
+
+
+def make_host_inc_heatmap():
+    """Heatmap: top Inc groups vs host categories."""
+    host_inc = db.host_vs_inc()
+    if not host_inc:
+        return go.Figure()
+    all_inc = {}
+    for cat_data in host_inc.values():
+        for inc, cnt in cat_data.items():
+            all_inc[inc] = all_inc.get(inc, 0) + cnt
+    top_inc = sorted(all_inc, key=all_inc.get, reverse=True)[:12]
+    hosts = sorted(host_inc.keys(), key=lambda h: sum(host_inc[h].values()), reverse=True)
+    z = [[host_inc[h].get(inc, 0) for inc in top_inc] for h in hosts]
+    fig = go.Figure(go.Heatmap(
+        z=z, x=top_inc, y=hosts,
+        colorscale="YlGnBu", texttemplate="%{z}", textfont={"size": 9},
+        hovertemplate="Host: <b>%{y}</b><br>Inc: <b>%{x}</b><br>Count: %{z}<extra></extra>",
+    ))
+    fig.update_layout(
+        template=PLOTLY_TEMPLATE, paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)", font_color=COLORS["text"],
+        margin=dict(t=10, b=10, l=10, r=10), height=400,
+        xaxis=dict(tickangle=-45), yaxis=dict(autorange="reversed"),
+    )
+    return fig
+
+
+def make_host_amr_heatmap():
+    """Heatmap: top AMR drug classes vs host categories."""
+    host_amr = db.host_vs_amr_class()
+    if not host_amr:
+        return go.Figure()
+    # Get top drug classes
+    all_dc = {}
+    skip = {"", "COPPER", "COPPER/SILVER", "MERCURY", "SILVER",
+            "TELLURIUM", "ARSENIC", "ZINC", "LEAD", "CADMIUM", "CHROMIUM"}
+    for cat_data in host_amr.values():
+        for dc, cnt in cat_data.items():
+            if dc.upper() not in skip:
+                all_dc[dc] = all_dc.get(dc, 0) + cnt
+    top_dc = sorted(all_dc, key=all_dc.get, reverse=True)[:12]
+    hosts = sorted(host_amr.keys(), key=lambda h: sum(host_amr[h].values()), reverse=True)
+    z = [[host_amr[h].get(dc, 0) for dc in top_dc] for h in hosts]
+    fig = go.Figure(go.Heatmap(
+        z=z, x=top_dc, y=hosts,
+        colorscale="YlOrRd", texttemplate="%{z}", textfont={"size": 9},
+        hovertemplate="Host: <b>%{y}</b><br>Drug: <b>%{x}</b><br>Count: %{z}<extra></extra>",
+    ))
+    fig.update_layout(
+        template=PLOTLY_TEMPLATE, paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)", font_color=COLORS["text"],
+        margin=dict(t=10, b=10, l=10, r=10), height=400,
+        xaxis=dict(tickangle=-45), yaxis=dict(autorange="reversed"),
+    )
+    return fig
+
+
 # ---------------------------------------------------------------------------
 # Layout
 # ---------------------------------------------------------------------------
@@ -1712,7 +1868,7 @@ def geography_tab():
     return html.Div(className="tab-content", children=[
         html.Div(className="section-header", children=[
             html.H2("Geographic Distribution", className="section-title"),
-            html.P("Plasmid reports across 57,751 geolocated plasmids from PLSDB",
+            html.P("57,751 geolocated plasmids from PLSDB across 100+ countries",
                    className="chart-subtitle"),
         ]),
 
@@ -1755,16 +1911,86 @@ def geography_tab():
             ]),
         ]),
 
-        # --- 3. Temporal animation ---
+        # --- 3. Temporal animations ---
         html.Div(className="correlation-section", children=[
-            html.H3("3. Temporal Spread Animation",
+            html.H3("3. Temporal Spread Animations",
                      className="correlation-heading"),
             html.Div(className="chart-card", children=[
-                html.P("Animated timeline of cumulative plasmid reports per "
-                       "country. Press play to watch the global spread.",
+                html.H3("All Plasmids", className="chart-title"),
+                html.P("Cumulative plasmid reports per country (2000-2024). "
+                       "Press play to watch the global spread.",
                        className="chart-subtitle"),
                 dcc.Graph(figure=make_temporal_animation(),
                           config={"scrollZoom": True}),
+            ]),
+            html.Div(className="chart-grid-2", style={"marginTop": "16px"}, children=[
+                html.Div(className="chart-card", children=[
+                    html.H3("Inc Group Spread", className="chart-title"),
+                    html.P("Select an Inc group to see its temporal spread",
+                           className="chart-subtitle"),
+                    dcc.Dropdown(
+                        id="geo-inc-dropdown",
+                        options=[{"label": g, "value": g}
+                                 for g in list(mob_typing["rep_types"].keys())[:15]],
+                        value="IncFIB",
+                        className="filter-input",
+                        style={"width": "200px", "marginBottom": "10px"},
+                    ),
+                    dcc.Loading(html.Div(id="geo-inc-animation")),
+                ]),
+                html.Div(className="chart-card", children=[
+                    html.H3("Mobility Type Spread", className="chart-title"),
+                    html.P("Select a mobility type to see its temporal spread",
+                           className="chart-subtitle"),
+                    dcc.Dropdown(
+                        id="geo-mob-dropdown",
+                        options=[{"label": m.capitalize(), "value": m}
+                                 for m in ["conjugative", "mobilizable", "non-mobilizable"]],
+                        value="conjugative",
+                        className="filter-input",
+                        style={"width": "200px", "marginBottom": "10px"},
+                    ),
+                    dcc.Loading(html.Div(id="geo-mob-animation")),
+                ]),
+            ]),
+        ]),
+
+        # --- 4. Host / Source correlations ---
+        html.Div(className="correlation-section", children=[
+            html.H3("4. Plasmid Host & Source",
+                     className="correlation-heading"),
+            html.Div(className="chart-grid-2", children=[
+                html.Div(className="chart-card", children=[
+                    html.H3("Host / Source Distribution", className="chart-title"),
+                    html.P("Classification: Human, Animal, Soil, Water, Food, Environment",
+                           className="chart-subtitle"),
+                    dcc.Graph(figure=make_host_distribution_chart(),
+                              config={"displayModeBar": False}),
+                ]),
+                html.Div(className="chart-card", children=[
+                    html.H3("Mobility by Host", className="chart-title"),
+                    html.P("Transfer potential varies significantly by source",
+                           className="chart-subtitle"),
+                    dcc.Graph(figure=make_host_mobility_chart(),
+                              config={"displayModeBar": False}),
+                ]),
+            ]),
+            html.Div(className="chart-grid-2", children=[
+                html.Div(className="chart-card", children=[
+                    html.H3("Inc Groups by Host", className="chart-title"),
+                    html.P("Which replicon types dominate in each host category",
+                           className="chart-subtitle"),
+                    dcc.Graph(figure=make_host_inc_heatmap(),
+                              config={"displayModeBar": False}),
+                ]),
+                html.Div(className="chart-card", children=[
+                    html.H3("AMR Drug Classes by Host", className="chart-title"),
+                    html.P("Resistance profiles differ between human, animal, "
+                           "and environmental sources",
+                           className="chart-subtitle"),
+                    dcc.Graph(figure=make_host_amr_heatmap(),
+                              config={"displayModeBar": False}),
+                ]),
             ]),
         ]),
     ])
@@ -1883,6 +2109,36 @@ def search_taxonomy(n_clicks, genus, species):
             return html.P(f"No plasmids found for {search_term}.", className="text-muted")
     except Exception as e:
         return html.P(f"Error: {str(e)}", className="text-danger")
+
+
+@callback(
+    Output("geo-inc-animation", "children"),
+    Input("geo-inc-dropdown", "value"),
+    prevent_initial_call=True,
+)
+def update_inc_animation(inc_group):
+    if not inc_group:
+        return html.P("Select an Inc group", className="text-muted")
+    data = db.geo_temporal_inc(inc_group)
+    if not data:
+        return html.P(f"No geographic data for {inc_group}", className="text-muted")
+    fig = _build_animated_map(data, color_scale="Tealgrn")
+    return dcc.Graph(figure=fig, config={"scrollZoom": True})
+
+
+@callback(
+    Output("geo-mob-animation", "children"),
+    Input("geo-mob-dropdown", "value"),
+    prevent_initial_call=True,
+)
+def update_mob_animation(mob_type):
+    if not mob_type:
+        return html.P("Select a mobility type", className="text-muted")
+    data = db.geo_temporal_mobility(mob_type)
+    if not data:
+        return html.P(f"No geographic data for {mob_type}", className="text-muted")
+    fig = _build_animated_map(data, color_scale="Purples")
+    return dcc.Graph(figure=fig, config={"scrollZoom": True})
 
 
 @callback(

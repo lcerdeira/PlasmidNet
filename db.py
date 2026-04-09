@@ -567,11 +567,8 @@ def geo_country_inc_top(limit=15):
     return result
 
 
-def geo_temporal_data(feature_filter=None):
-    """
-    Year-by-year plasmid appearance per country for animation.
-    Returns list of dicts with year, country, lat, lng, count.
-    """
+def geo_temporal_data():
+    """Year-by-year plasmid appearance per country for animation."""
     rows = q("""
         SELECT
             SUBSTR(n.NUCCORE_CreateDate, 1, 4) AS year,
@@ -586,6 +583,118 @@ def geo_temporal_data(feature_filter=None):
         ORDER BY year, cnt DESC
     """)
     return rows
+
+
+def geo_temporal_inc(inc_group="IncFIB"):
+    """Year-by-year spread of a specific Inc group across countries."""
+    rows = q("""
+        SELECT
+            SUBSTR(n.NUCCORE_CreateDate, 1, 4) AS year,
+            b.country, b.lat, b.lng,
+            COUNT(*) AS cnt
+        FROM nuccore n
+        JOIN biosample_location b ON n.BIOSAMPLE_UID = b.BIOSAMPLE_UID
+        JOIN typing t ON n.NUCCORE_ACC = t.NUCCORE_ACC
+        WHERE b.country != '' AND b.lat IS NOT NULL
+          AND t.rep_type LIKE ?
+          AND LENGTH(n.NUCCORE_CreateDate) >= 4
+          AND CAST(SUBSTR(n.NUCCORE_CreateDate, 1, 4) AS INTEGER) >= 2000
+        GROUP BY year, b.country
+        ORDER BY year, cnt DESC
+    """, (f"%{inc_group}%",))
+    return rows
+
+
+def geo_temporal_mobility(mobility_type="conjugative"):
+    """Year-by-year spread of a mobility type across countries."""
+    rows = q("""
+        SELECT
+            SUBSTR(n.NUCCORE_CreateDate, 1, 4) AS year,
+            b.country, b.lat, b.lng,
+            COUNT(*) AS cnt
+        FROM nuccore n
+        JOIN biosample_location b ON n.BIOSAMPLE_UID = b.BIOSAMPLE_UID
+        JOIN typing t ON n.NUCCORE_ACC = t.NUCCORE_ACC
+        WHERE b.country != '' AND b.lat IS NOT NULL
+          AND t.predicted_mobility = ?
+          AND LENGTH(n.NUCCORE_CreateDate) >= 4
+          AND CAST(SUBSTR(n.NUCCORE_CreateDate, 1, 4) AS INTEGER) >= 2000
+        GROUP BY year, b.country
+        ORDER BY year, cnt DESC
+    """, (mobility_type,))
+    return rows
+
+
+# ── Host / source correlations ─────────────────────────────────────
+
+def host_category_counts():
+    """Count plasmids per host category."""
+    rows = q("""
+        SELECT b.host_category, COUNT(DISTINCT n.NUCCORE_ACC) AS cnt
+        FROM nuccore n
+        JOIN biosample_location b ON n.BIOSAMPLE_UID = b.BIOSAMPLE_UID
+        WHERE b.host_category != '' AND b.host_category != 'Other'
+        GROUP BY b.host_category
+        ORDER BY cnt DESC
+    """)
+    return {r["host_category"]: r["cnt"] for r in rows}
+
+
+def host_vs_mobility():
+    """Mobility distribution per host category."""
+    rows = q("""
+        SELECT b.host_category, t.predicted_mobility, COUNT(*) AS cnt
+        FROM nuccore n
+        JOIN biosample_location b ON n.BIOSAMPLE_UID = b.BIOSAMPLE_UID
+        JOIN typing t ON n.NUCCORE_ACC = t.NUCCORE_ACC
+        WHERE b.host_category != '' AND b.host_category != 'Other'
+        GROUP BY b.host_category, t.predicted_mobility
+    """)
+    result = {}
+    for r in rows:
+        result.setdefault(r["host_category"], {})
+        result[r["host_category"]][r["predicted_mobility"]] = r["cnt"]
+    return result
+
+
+def host_vs_inc(limit=10):
+    """Top Inc groups per host category."""
+    rows = q("""
+        SELECT b.host_category, t.rep_type
+        FROM nuccore n
+        JOIN biosample_location b ON n.BIOSAMPLE_UID = b.BIOSAMPLE_UID
+        JOIN typing t ON n.NUCCORE_ACC = t.NUCCORE_ACC
+        WHERE b.host_category != '' AND b.host_category != 'Other'
+          AND t.rep_type != ''
+    """)
+    result = {}
+    for r in rows:
+        cat = r["host_category"]
+        for rt in r["rep_type"].split(","):
+            rt = rt.strip()
+            if rt:
+                result.setdefault(cat, {})
+                result[cat][rt] = result[cat].get(rt, 0) + 1
+    return result
+
+
+def host_vs_amr_class():
+    """Top AMR drug classes per host category."""
+    rows = q("""
+        SELECT b.host_category, a.drug_class, COUNT(DISTINCT n.NUCCORE_ACC) AS cnt
+        FROM nuccore n
+        JOIN biosample_location b ON n.BIOSAMPLE_UID = b.BIOSAMPLE_UID
+        JOIN amr a ON n.NUCCORE_ACC = a.NUCCORE_ACC
+        WHERE b.host_category != '' AND b.host_category != 'Other'
+          AND a.drug_class IS NOT NULL AND a.drug_class != ''
+        GROUP BY b.host_category, a.drug_class
+        ORDER BY cnt DESC
+    """)
+    result = {}
+    for r in rows:
+        result.setdefault(r["host_category"], {})
+        result[r["host_category"]][r["drug_class"]] = r["cnt"]
+    return result
 
 
 # ── Plasmid viewer lookup ──────────────────────────────────────────
