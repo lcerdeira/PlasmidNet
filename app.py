@@ -1866,9 +1866,9 @@ STATS_ROW = html.Div(className="stats-row", children=[
     stat_card("Total Plasmids", _total_plasmids,
               f"PLSDB {overview.get('total',0):,} + NCBI {overview.get('ncbi_extra',0):,}",
               COLORS["accent"]),
-    stat_card("AMR Annotations", overview.get("total_amr", 0), "A", COLORS["accent2"]),
-    stat_card("Virulence Annotations", overview.get("total_virulence_factors", 0), "V", COLORS["accent4"]),
-    stat_card("Total Annotations", overview.get("total_annotations", 0), "T", COLORS["accent3"]),
+    # stat_card("AMR Annotations", overview.get("total_amr", 0), "A", COLORS["accent2"]),
+    # stat_card("Virulence Annotations", overview.get("total_virulence_factors", 0), "V", COLORS["accent4"]),
+    # stat_card("Total Annotations", overview.get("total_annotations", 0), "T", COLORS["accent3"]),
 ])
 
 TABS = html.Div(className="tabs-container", children=[
