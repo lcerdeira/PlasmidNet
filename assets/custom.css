@@ -664,6 +664,23 @@ body {
     background: #faf7f2;
 }
 
+/* --- Upload Area --- */
+.upload-area {
+    border: 2px dashed #e2ddd5;
+    border-radius: 10px;
+    padding: 20px;
+    text-align: center;
+    cursor: pointer;
+    color: #64748b;
+    font-size: 0.9rem;
+    transition: border-color 0.2s, background 0.2s;
+}
+
+.upload-area:hover {
+    border-color: #0d9488;
+    background: #f0fdf4;
+}
+
 .correlation-heading {
     font-size: 1.05rem;
     font-weight: 600;

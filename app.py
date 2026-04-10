@@ -86,6 +86,33 @@ CHART_COLORS = px.colors.qualitative.Set2
 # ---------------------------------------------------------------------------
 # Helper: stat card
 # ---------------------------------------------------------------------------
+def _parse_multi_fasta(text):
+    """Parse FASTA text (possibly multi-record) into list of (name, sequence)."""
+    import re
+    results = []
+    text = text.strip()
+    if not text.startswith(">"):
+        # Raw sequence
+        seq = re.sub(r"[^ACGTNacgtn]", "", text)
+        if seq:
+            results.append(("uploaded", seq.upper()))
+        return results
+    current_name = ""
+    current_seq = []
+    for line in text.split("\n"):
+        line = line.strip()
+        if line.startswith(">"):
+            if current_name and current_seq:
+                results.append((current_name, "".join(current_seq).upper()))
+            current_name = line[1:].split()[0] or "unnamed"
+            current_seq = []
+        else:
+            current_seq.append(re.sub(r"[^ACGTNacgtn]", "", line))
+    if current_name and current_seq:
+        results.append((current_name, "".join(current_seq).upper()))
+    return results
+
+
 def stat_card(title, value, icon, color):
     return html.Div(
         className="stat-card",
@@ -2899,19 +2926,36 @@ def compare_tab():
         html.Div(className="section-header", children=[
             html.H2("Plasmid Comparison", className="section-title"),
             html.P("Compare up to 10 plasmids using BLASTn alignment "
-                   "and pyCirclize visualization. Enter NCBI accessions.",
+                   "and pyCirclize visualization.",
                    className="chart-subtitle"),
         ]),
         html.Div(className="chart-card", children=[
-            html.H3("Enter Accessions (2-10, one per line)", className="chart-title"),
+            html.H3("Input Plasmids", className="chart-title"),
+            html.P("Enter NCBI accessions (one per line) or upload FASTA files.",
+                   className="chart-subtitle"),
+            # Accessions input
             dcc.Textarea(
                 id="compare-accessions",
                 placeholder="MH595533\nMH595534\nNC_011102.1",
-                style={"width": "100%", "height": "140px", "marginTop": "8px",
+                style={"width": "100%", "height": "100px", "marginTop": "8px",
                        "fontFamily": "monospace", "fontSize": "0.9rem",
                        "borderRadius": "8px", "border": "1px solid #e2ddd5",
                        "padding": "10px", "background": "#faf7f2"},
             ),
+            # File upload
+            html.Div(style={"marginTop": "12px"}, children=[
+                dcc.Upload(
+                    id="compare-upload",
+                    children=html.Div([
+                        "Drag & drop or ",
+                        html.A("click to upload", style={"color": COLORS["accent"],
+                                                          "fontWeight": "600"}),
+                        " FASTA / GenBank files",
+                    ]),
+                    className="upload-area",
+                    multiple=True,
+                ),
+            ]),
             html.Div(style={"marginTop": "12px", "display": "flex", "gap": "10px"}, children=[
                 html.Button("Compare", id="compare-btn", className="btn-primary"),
             ]),
@@ -2933,8 +2977,9 @@ def seqanalysis_tab():
         ]),
         html.Div(className="chart-card", children=[
             html.H3("Input Sequence", className="chart-title"),
-            html.P("Paste a DNA sequence (FASTA or raw) or enter an NCBI accession.",
+            html.P("Fetch from NCBI, upload a file, or paste/edit directly.",
                    className="chart-subtitle"),
+            # Row 1: NCBI fetch
             html.Div(className="filter-row", children=[
                 dcc.Input(
                     id="seq-accession", type="text",
@@ -2944,18 +2989,31 @@ def seqanalysis_tab():
                 ),
                 html.Button("Fetch & Analyze", id="seq-fetch-btn",
                             className="btn-primary"),
-                html.Span(" or ", style={"color": COLORS["text_muted"],
-                                         "margin": "0 8px"}),
             ]),
+            # Row 2: File upload
+            dcc.Upload(
+                id="seq-upload",
+                children=html.Div([
+                    "Drag & drop or ",
+                    html.A("click to upload", style={"color": COLORS["accent"],
+                                                      "fontWeight": "600"}),
+                    " a FASTA or GenBank file",
+                ]),
+                className="upload-area",
+                style={"marginTop": "12px"},
+            ),
+            # Row 3: Editable sequence textarea
+            html.P("Or paste / edit sequence below:",
+                   className="chart-subtitle", style={"marginTop": "12px"}),
             dcc.Textarea(
                 id="seq-input",
-                placeholder="Paste DNA sequence here (FASTA or raw)...",
-                style={"width": "100%", "height": "120px", "marginTop": "12px",
+                placeholder=">my_plasmid\nATGCATGCATGC...",
+                style={"width": "100%", "height": "150px",
                        "fontFamily": "monospace", "fontSize": "0.85rem",
                        "borderRadius": "8px", "border": "1px solid #e2ddd5",
                        "padding": "10px", "background": "#faf7f2"},
             ),
-            html.Button("Analyze Pasted Sequence", id="seq-paste-btn",
+            html.Button("Analyze Sequence", id="seq-paste-btn",
                         className="btn-secondary", style={"marginTop": "10px"}),
         ]),
         dcc.Loading(
@@ -3068,17 +3126,59 @@ def render_tab(tab):
     Output("compare-results", "children"),
     Input("compare-btn", "n_clicks"),
     State("compare-accessions", "value"),
+    State("compare-upload", "contents"),
+    State("compare-upload", "filename"),
     prevent_initial_call=True,
 )
-def run_comparison(n_clicks, accessions_text):
-    if not accessions_text or not accessions_text.strip():
-        return html.P("Enter at least 2 accessions.", className="text-muted")
+def run_comparison(n_clicks, accessions_text, upload_contents, upload_filenames):
+    import base64 as b64
 
-    accessions = [a.strip() for a in accessions_text.strip().split("\n") if a.strip()]
-    if len(accessions) < 2:
-        return html.P("Enter at least 2 accessions (one per line).", className="text-muted")
-    if len(accessions) > 10:
-        accessions = accessions[:10]
+    accessions = []
+    if accessions_text:
+        accessions = [a.strip() for a in accessions_text.strip().split("\n") if a.strip()]
+
+    # Parse uploaded files
+    uploaded_seqs = []  # list of (name, sequence)
+    if upload_contents:
+        if not isinstance(upload_contents, list):
+            upload_contents = [upload_contents]
+            upload_filenames = [upload_filenames]
+        for content, fname in zip(upload_contents, upload_filenames):
+            _, content_string = content.split(",")
+            decoded = b64.b64decode(content_string).decode("utf-8", errors="ignore")
+            # Parse FASTA
+            seqs = _parse_multi_fasta(decoded)
+            for name, seq in seqs:
+                uploaded_seqs.append((fname.rsplit(".", 1)[0] if not name else name, seq))
+
+    total = len(accessions) + len(uploaded_seqs)
+    if total < 2:
+        return html.P("Provide at least 2 plasmids (accessions + uploads).",
+                      className="text-muted")
+    if total > 10:
+        return html.P("Maximum 10 plasmids.", className="text-muted")
+
+    # Fetch NCBI accessions
+    sequences = []
+    names = []
+    for acc in accessions[:10]:
+        gb_text = _fetch_genbank_text(acc)
+        if not gb_text:
+            return html.P(f"Could not fetch {acc} from NCBI.", className="text-danger")
+        seq = _parse_genbank_sequence(gb_text)
+        if not seq or len(seq) < 100:
+            return html.P(f"{acc}: no sequence data or too short.", className="text-danger")
+        sequences.append(seq)
+        names.append(acc)
+
+    # Add uploaded sequences
+    for name, seq in uploaded_seqs:
+        if len(seq) >= 100:
+            sequences.append(seq)
+            names.append(name)
+
+    if len(sequences) < 2:
+        return html.P("Need at least 2 valid sequences.", className="text-muted")
 
     # Fetch sequences from NCBI
     sequences = []
@@ -3142,6 +3242,22 @@ def run_comparison(n_clicks, accessions_text):
                              data={"names": names, "sequences": sequences}))
 
     return html.Div(results)
+
+
+@callback(
+    Output("seq-input", "value"),
+    Input("seq-upload", "contents"),
+    State("seq-upload", "filename"),
+    prevent_initial_call=True,
+)
+def load_uploaded_seq(contents, filename):
+    """Load uploaded file content into the editable textarea."""
+    if not contents:
+        raise dash.exceptions.PreventUpdate
+    import base64 as b64
+    content_type, content_string = contents.split(",")
+    decoded = b64.b64decode(content_string).decode("utf-8", errors="ignore")
+    return decoded
 
 
 @callback(
