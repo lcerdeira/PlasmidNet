@@ -41,6 +41,13 @@ body {
     display: block;
 }
 
+.header-title {
+    font-size: 1.2rem;
+    font-weight: 700;
+    color: #0d9488;
+    letter-spacing: -0.3px;
+}
+
 .subtitle {
     font-size: 0.85rem;
     color: #64748b;

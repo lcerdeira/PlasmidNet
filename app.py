@@ -2049,15 +2049,11 @@ def make_comobilization_ml_chart():
 
 HEADER = html.Div(className="header", children=[
     html.Div(className="header-content", children=[
-        html.Div([
-            html.Img(src="/assets/logo.png", className="logo-img"),
-        ]),
+        html.Span("PlasmidNet", className="header-title"),
         html.Div(className="header-links", children=[
             html.A("GitHub", href="https://github.com/lcerdeira/plasmidnet",
                     target="_blank", className="header-link"),
-            html.A("Documentation", href="https://github.com/lcerdeira/plasmidnet/wiki",
-                    target="_blank", className="header-link"),
-            html.A("GitHub", href="https://github.com/lcerdeira/plasmidnet",
+            html.A("PLSDB", href="https://ccb-microbe.cs.uni-saarland.de/plsdb2025/",
                     target="_blank", className="header-link"),
         ]),
     ]),
