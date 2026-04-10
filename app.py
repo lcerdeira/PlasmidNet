@@ -15,6 +15,7 @@ import pandas as pd
 from data_loader import fetch_genbank_full, _fetch_genbank_text, _parse_genbank_sequence
 import db
 import seq_analysis
+import plasmid_compare
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -1916,6 +1917,85 @@ def make_comobilization_chart(comob_data):
 
 
 # ---------------------------------------------------------------------------
+def make_is_family_chart():
+    """Bar chart of IS element family distribution."""
+    families = db.is_family_counts()
+    if not families:
+        return go.Figure()
+    # Top 15 families
+    top = list(families.items())[:15]
+    df = pd.DataFrame([
+        {"Family": f, "Annotations": d["count"], "Plasmids": d["plasmids"]}
+        for f, d in top
+    ])
+    fig = px.bar(df, x="Family", y="Annotations",
+                 color_discrete_sequence=[COLORS["accent2"]],
+                 hover_data={"Plasmids": True})
+    fig.update_layout(
+        template=PLOTLY_TEMPLATE, paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)", font_color=COLORS["text"],
+        margin=dict(t=10, b=10, l=10, r=10), height=420,
+        xaxis_tickangle=-45, xaxis_title="", yaxis_title="Total annotations",
+    )
+    return fig
+
+
+def make_is_mobility_chart():
+    """Stacked bar: IS families by mobility type."""
+    fam_mob = db.is_family_by_mobility()
+    if not fam_mob:
+        return go.Figure()
+    top_fams = sorted(fam_mob.keys(),
+                      key=lambda f: sum(fam_mob[f].values()), reverse=True)[:12]
+    mob_types = ["conjugative", "mobilizable", "non-mobilizable"]
+    mob_colors = [COLORS["accent3"], COLORS["accent"], COLORS["accent4"]]
+
+    fig = go.Figure()
+    for mob, color in zip(mob_types, mob_colors):
+        vals = [fam_mob[f].get(mob, 0) for f in top_fams]
+        fig.add_trace(go.Bar(x=top_fams, y=vals, name=mob.capitalize(),
+                             marker_color=color))
+    fig.update_layout(
+        template=PLOTLY_TEMPLATE, paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)", font_color=COLORS["text"],
+        margin=dict(t=10, b=10, l=10, r=10), height=420,
+        barmode="stack", xaxis_tickangle=-45, xaxis_title="",
+        yaxis_title="Annotations",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02,
+                    xanchor="right", x=1, font_size=11),
+    )
+    return fig
+
+
+def make_is_inc_heatmap():
+    """Heatmap: IS families vs Inc groups."""
+    inc_is = db.is_family_by_inc()
+    if not inc_is:
+        return go.Figure()
+    # Get top IS families and Inc groups
+    all_is = {}
+    for inc, fams in inc_is.items():
+        for fam, cnt in fams.items():
+            all_is[fam] = all_is.get(fam, 0) + cnt
+    top_is = sorted(all_is, key=all_is.get, reverse=True)[:12]
+    top_inc = sorted(inc_is.keys(),
+                     key=lambda i: sum(inc_is[i].values()), reverse=True)[:10]
+
+    z = [[inc_is[inc].get(fam, 0) for fam in top_is] for inc in top_inc]
+    fig = go.Figure(go.Heatmap(
+        z=z, x=top_is, y=top_inc,
+        colorscale="Viridis", texttemplate="%{z}", textfont={"size": 9},
+        hovertemplate="Inc: <b>%{y}</b><br>IS: <b>%{x}</b><br>Count: %{z:,}<extra></extra>",
+    ))
+    fig.update_layout(
+        template=PLOTLY_TEMPLATE, paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)", font_color=COLORS["text"],
+        margin=dict(t=10, b=10, l=10, r=10), height=420,
+        xaxis=dict(tickangle=-45), yaxis=dict(autorange="reversed"),
+    )
+    return fig
+
+
 def make_relaxase_t4ss_chart():
     """Heatmap: observed relaxase x T4SS co-occurrence with known rules overlay."""
     data, all_relax, all_mpf = db.relaxase_t4ss_compatibility()
@@ -2095,8 +2175,10 @@ TABS = html.Div(className="tabs-container", children=[
             dcc.Tab(label="Correlations", value="correlations", className="tab", selected_className="tab--selected"),
             dcc.Tab(label="Geography", value="geography", className="tab", selected_className="tab--selected"),
             dcc.Tab(label="Analytics", value="analytics", className="tab", selected_className="tab--selected"),
+            dcc.Tab(label="IS/Transposons", value="is_families", className="tab", selected_className="tab--selected"),
+            dcc.Tab(label="Compare", value="compare", className="tab", selected_className="tab--selected"),
             dcc.Tab(label="Seq Analysis", value="seqanalysis", className="tab", selected_className="tab--selected"),
-            dcc.Tab(label="Plasmid Lookup", value="lookup", className="tab", selected_className="tab--selected"),
+            # dcc.Tab(label="Plasmid Lookup", value="lookup", className="tab", selected_className="tab--selected"),
         ],
     ),
 ])
@@ -2769,6 +2851,78 @@ def analytics_tab():
     ])
 
 
+def is_families_tab():
+    return html.Div(className="tab-content", children=[
+        html.Div(className="section-header", children=[
+            html.H2("IS Elements & Transposon Families", className="section-title"),
+            html.P("Distribution of insertion sequences and transposons across "
+                   "438,616 PGAP annotations from 72,556 PLSDB plasmids",
+                   className="chart-subtitle"),
+        ]),
+
+        # Row 1: Family distribution + Mobility
+        html.Div(className="chart-grid-2", children=[
+            html.Div(className="chart-card", children=[
+                html.H3("IS Family Distribution", className="chart-title"),
+                html.P("Top 15 IS element and transposon families by annotation count",
+                       className="chart-subtitle"),
+                dcc.Graph(figure=make_is_family_chart(),
+                          config={"displayModeBar": False}),
+            ]),
+            html.Div(className="chart-card", children=[
+                html.H3("IS Families by Mobility", className="chart-title"),
+                html.P("Which IS families are enriched in conjugative vs "
+                       "non-mobilizable plasmids",
+                       className="chart-subtitle"),
+                dcc.Graph(figure=make_is_mobility_chart(),
+                          config={"displayModeBar": False}),
+            ]),
+        ]),
+
+        # Row 2: IS x Inc heatmap
+        html.Div(className="chart-grid-1", children=[
+            html.Div(className="chart-card", children=[
+                html.H3("IS Families by Inc Group", className="chart-title"),
+                html.P("Which IS element families dominate in each "
+                       "incompatibility group. Different plasmid backbones "
+                       "harbour distinct mobile element repertoires.",
+                       className="chart-subtitle"),
+                dcc.Graph(figure=make_is_inc_heatmap(),
+                          config={"displayModeBar": False}),
+            ]),
+        ]),
+    ])
+
+
+def compare_tab():
+    return html.Div(className="tab-content", children=[
+        html.Div(className="section-header", children=[
+            html.H2("Plasmid Comparison", className="section-title"),
+            html.P("Compare up to 10 plasmids using BLASTn alignment "
+                   "and pyCirclize visualization. Enter NCBI accessions.",
+                   className="chart-subtitle"),
+        ]),
+        html.Div(className="chart-card", children=[
+            html.H3("Enter Accessions (2-10, one per line)", className="chart-title"),
+            dcc.Textarea(
+                id="compare-accessions",
+                placeholder="MH595533\nMH595534\nNC_011102.1",
+                style={"width": "100%", "height": "140px", "marginTop": "8px",
+                       "fontFamily": "monospace", "fontSize": "0.9rem",
+                       "borderRadius": "8px", "border": "1px solid #e2ddd5",
+                       "padding": "10px", "background": "#faf7f2"},
+            ),
+            html.Div(style={"marginTop": "12px", "display": "flex", "gap": "10px"}, children=[
+                html.Button("Compare", id="compare-btn", className="btn-primary"),
+            ]),
+        ]),
+        dcc.Loading(
+            type="circle", color=COLORS["accent"],
+            children=html.Div(id="compare-results"),
+        ),
+    ])
+
+
 def seqanalysis_tab():
     return html.Div(className="tab-content", children=[
         html.Div(className="section-header", children=[
@@ -2899,11 +3053,95 @@ def render_tab(tab):
         return geography_tab()
     elif tab == "analytics":
         return analytics_tab()
+    elif tab == "is_families":
+        return is_families_tab()
+    elif tab == "compare":
+        return compare_tab()
     elif tab == "seqanalysis":
         return seqanalysis_tab()
     elif tab == "lookup":
         return lookup_tab()
     return overview_tab()
+
+
+@callback(
+    Output("compare-results", "children"),
+    Input("compare-btn", "n_clicks"),
+    State("compare-accessions", "value"),
+    prevent_initial_call=True,
+)
+def run_comparison(n_clicks, accessions_text):
+    if not accessions_text or not accessions_text.strip():
+        return html.P("Enter at least 2 accessions.", className="text-muted")
+
+    accessions = [a.strip() for a in accessions_text.strip().split("\n") if a.strip()]
+    if len(accessions) < 2:
+        return html.P("Enter at least 2 accessions (one per line).", className="text-muted")
+    if len(accessions) > 10:
+        accessions = accessions[:10]
+
+    # Fetch sequences from NCBI
+    sequences = []
+    names = []
+    for acc in accessions:
+        gb_text = _fetch_genbank_text(acc)
+        if not gb_text:
+            return html.P(f"Could not fetch {acc} from NCBI.", className="text-danger")
+        seq = _parse_genbank_sequence(gb_text)
+        if not seq or len(seq) < 100:
+            return html.P(f"{acc}: no sequence data or too short.", className="text-danger")
+        sequences.append(seq)
+        names.append(acc)
+
+    # Run comparison
+    img_b64, alignments = plasmid_compare.compare_plasmids(accessions, sequences, names)
+
+    # Build results
+    results = []
+
+    # Summary badges
+    badges = [html.Span(f"{n}: {len(s):,} bp", className="badge")
+              for n, s in zip(names, sequences)]
+    results.append(html.Div(className="feature-badges", children=badges))
+
+    # Comparison image
+    if img_b64:
+        results.append(html.Img(src=img_b64, className="plasmid-map-img"))
+
+    # Alignment table
+    if alignments:
+        results.append(html.Div(className="chart-card", style={"marginTop": "16px"}, children=[
+            html.H3(f"BLASTn Alignments ({len(alignments)} HSPs)", className="chart-title"),
+            html.Table(className="analytics-table", children=[
+                html.Thead(html.Tr([
+                    html.Th("Query"), html.Th("Subject"),
+                    html.Th("Identity"), html.Th("Length"),
+                    html.Th("Q start-end"), html.Th("S start-end"),
+                ])),
+                html.Tbody([
+                    html.Tr([
+                        html.Td(a["query"]), html.Td(a["subject"]),
+                        html.Td(f"{a['identity']:.1f}%"),
+                        html.Td(f"{a['length']:,}"),
+                        html.Td(f"{a['q_start']:,}-{a['q_end']:,}"),
+                        html.Td(f"{a['s_start']:,}-{a['s_end']:,}"),
+                    ]) for a in alignments[:20]
+                ]),
+            ]),
+        ]))
+
+    # Download buttons
+    results.append(html.Div(style={"marginTop": "16px", "display": "flex", "gap": "10px"}, children=[
+        html.Button(f"Download {n} FASTA", id={"type": "dl-fasta", "index": i},
+                    className="btn-secondary", style={"fontSize": "0.8rem"})
+        for i, n in enumerate(names)
+    ]))
+
+    # Store sequences for download (via dcc.Store)
+    results.append(dcc.Store(id="compare-sequences",
+                             data={"names": names, "sequences": sequences}))
+
+    return html.Div(results)
 
 
 @callback(

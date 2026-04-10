@@ -1204,6 +1204,98 @@ def host_species_sharing():
     return rows
 
 
+# ── IS / Transposon families ───────────────────────────────────────
+
+def is_family_counts():
+    """Count IS element families from PGAP product descriptions."""
+    import re
+    rows = q("""
+        SELECT product, COUNT(*) as cnt, COUNT(DISTINCT NUCCORE_ACC) as plasmids
+        FROM pgap_features
+        WHERE category = 'TRANSPOSASE'
+        GROUP BY product ORDER BY cnt DESC
+    """)
+    # Parse IS family from product name
+    families = {}
+    for r in rows:
+        product = r["product"]
+        # Extract IS family: "IS6-like element IS26 family transposase" -> "IS26"
+        # "IS3 family transposase" -> "IS3"
+        m = re.search(r"(IS\w+)\s+family", product)
+        if m:
+            fam = m.group(1)
+        elif "integrase" in product.lower() or "intI" in product.lower():
+            fam = "Integrase"
+        elif "recombinase" in product.lower():
+            fam = "Recombinase"
+        elif "Tn3" in product:
+            fam = "Tn3"
+        elif "Rpn" in product:
+            fam = "Rpn"
+        else:
+            fam = "Other"
+        families.setdefault(fam, {"count": 0, "plasmids": 0})
+        families[fam]["count"] += r["cnt"]
+        families[fam]["plasmids"] += r["plasmids"]
+    return dict(sorted(families.items(), key=lambda x: -x[1]["count"]))
+
+
+def is_family_by_mobility():
+    """IS family distribution by plasmid mobility."""
+    import re
+    rows = q("""
+        SELECT p.product, t.predicted_mobility, COUNT(*) as cnt
+        FROM pgap_features p
+        JOIN typing t ON p.NUCCORE_ACC = t.NUCCORE_ACC
+        WHERE p.category = 'TRANSPOSASE' AND t.predicted_mobility != ''
+        GROUP BY p.product, t.predicted_mobility
+    """)
+    families_mob = {}
+    for r in rows:
+        product = r["product"]
+        m = re.search(r"(IS\w+)\s+family", product)
+        if m:
+            fam = m.group(1)
+        elif "Tn3" in product:
+            fam = "Tn3"
+        elif "integrase" in product.lower():
+            fam = "Integrase"
+        else:
+            continue
+        families_mob.setdefault(fam, {})
+        families_mob[fam][r["predicted_mobility"]] = \
+            families_mob[fam].get(r["predicted_mobility"], 0) + r["cnt"]
+    return families_mob
+
+
+def is_family_by_inc():
+    """Top IS families per Inc group."""
+    import re
+    rows = q("""
+        SELECT p.product, t.rep_type, COUNT(*) as cnt
+        FROM pgap_features p
+        JOIN typing t ON p.NUCCORE_ACC = t.NUCCORE_ACC
+        WHERE p.category = 'TRANSPOSASE' AND t.rep_type != ''
+        GROUP BY p.product, t.rep_type
+        ORDER BY cnt DESC
+        LIMIT 5000
+    """)
+    # Parse and aggregate
+    inc_is = {}
+    for r in rows:
+        m = re.search(r"(IS\w+)\s+family", r["product"])
+        fam = m.group(1) if m else None
+        if not fam:
+            continue
+        for rt in r["rep_type"].split(","):
+            rt = rt.strip()
+            if rt and "IncF" in rt or rt in ("IncI1", "IncN", "IncHI2", "IncC",
+                                              "ColRNAI", "IncR", "IncX4"):
+                inc_is.setdefault(rt, {})
+                inc_is[rt][fam] = inc_is[rt].get(fam, 0) + r["cnt"]
+    return inc_is
+
+
 # ── Data export ────────────────────────────────────────────────────
 
 EXPORT_QUERIES = {
