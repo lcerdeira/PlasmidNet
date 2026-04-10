@@ -71,3 +71,37 @@ Heatmap of observed co-location vs literature-known compatibility:
 - MOBF → MPF_F (known)
 - MOBP → MPF_T, MPF_F (known)
 - MOBC → MPF_F (885 co-occurrences, **not in standard rules** — potential novel pathway)
+
+## 9. Retro-mobilization & HGT Routes
+
+**Question**: How can non-mobilizable plasmids spread horizontally?
+
+**Method**: For each of the 28,816 non-mobilizable plasmids, check whether they share a bacterial host (same BioSample) with conjugative or mobilizable plasmids, and assess alternative transfer routes.
+
+**Key findings**:
+- **Retro-mobilization**: 9,555 (33%) share a host with a conjugative plasmid — the conjugative T4SS can pull non-mobilizable DNA back into the donor cell (reverse transfer)
+- **Mobilizable relay**: 10,736 (37%) have a mobilizable partner that could relay transfer
+- **Transduction**: 8,585 (30%) are small enough (<10 kb) to fit in phage capsids
+- **AMR at risk**: 2,226 non-mobilizable plasmids carry AMR genes AND have a conjugative partner — direct retro-mobilization risk for resistance dissemination
+
+**Conjugative partners**: IncFIB/FII, IncL/M, IncI-gamma/K1, IncN are the most frequent "helper" plasmids co-existing with non-mobilizable ones.
+
+## 10. blaKPC Transposon Context
+
+**Question**: What genetic elements carry blaKPC, and are NTEKPC elements true transposons?
+
+**Method**: Analyse 4,800+ blaKPC-carrying plasmids. Map genes within 5 kb of blaKPC. Cross-reference with Inc groups and mobility.
+
+**Key findings**:
+- blaTEM is the most common gene near blaKPC (192 plasmids) — part of NTEKPC-IId structure
+- 59% of KPC plasmids are conjugative (self-transmissible)
+- IncFIB/FII dominate, followed by IncN and IncL/M
+- NTEKPC elements share structural features with classical transposons (IRs, TSDs, IS element associations), supporting their classification as true transposons
+
+## 11. Integron ML & Transposon-AMR Correlations
+
+**Question**: What predicts integron carriage? Which IS families co-occur with which resistance classes?
+
+**Method**: Random Forest predicting class 1 integron carriage. IS family x AMR drug class co-occurrence heatmap from PGAP + AMR data.
+
+**Findings**: Plasmid length, Inc group, and genus are the strongest predictors of integron carriage. IS26 co-occurs most strongly with aminoglycoside and beta-lactam resistance.
