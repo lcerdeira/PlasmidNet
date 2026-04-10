@@ -2208,6 +2208,13 @@ def make_comobilization_ml_chart():
 
 
 # ---------------------------------------------------------------------------
+# Pre-compute expensive charts at startup
+# ---------------------------------------------------------------------------
+logger.info("Computing XGBoost + SHAP...")
+_shap_fig, _shap_acc = make_xgboost_shap_chart()
+logger.info(f"SHAP done (accuracy: {_shap_acc}%)")
+
+# ---------------------------------------------------------------------------
 # Layout
 # ---------------------------------------------------------------------------
 
@@ -2954,10 +2961,13 @@ def analytics_tab():
                 html.Div(className="chart-card", children=[
                     html.H3("SHAP Values (XGBoost)", className="chart-title"),
                     html.P("XGBoost trained on 57K plasmids. SHAP values show "
-                           "each feature's contribution to the mobility prediction. "
-                           "Higher = more predictive.",
+                           "each feature's contribution to the mobility prediction.",
                            className="chart-subtitle"),
-                    dcc.Loading(html.Div(id="shap-chart")),
+                    html.P(f"Model accuracy: {_shap_acc}%",
+                           className="chart-subtitle",
+                           style={"fontWeight": "600", "color": COLORS["accent"]}),
+                    dcc.Graph(figure=_shap_fig,
+                              config={"displayModeBar": False}),
                 ]),
                 html.Div(className="chart-card", children=[
                     html.H3("Random Forest Importance", className="chart-title"),
@@ -3783,21 +3793,6 @@ def download_data(n_clicks, dataset):
     return dcc.send_string(csv_str, filename=f"plasmidnet_{dataset}.csv")
 
 
-@callback(
-    Output("shap-chart", "children"),
-    Input("main-tabs", "value"),
-    prevent_initial_call=True,
-)
-def compute_shap(tab):
-    if tab != "analytics":
-        raise dash.exceptions.PreventUpdate
-    fig, acc = make_xgboost_shap_chart()
-    acc_text = f"Model accuracy: {acc}%" if acc else ""
-    return html.Div([
-        html.P(acc_text, className="chart-subtitle",
-               style={"fontWeight": "600", "color": COLORS["accent"]}),
-        dcc.Graph(figure=fig, config={"displayModeBar": False}),
-    ])
 
 
 @callback(
