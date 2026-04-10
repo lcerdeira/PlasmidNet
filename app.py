@@ -2064,13 +2064,26 @@ HEADER = html.Div(className="header", children=[
 ])
 
 _total_plasmids = overview.get("total", 0) + overview.get("ncbi_extra", 0)
-STATS_ROW = html.Div(className="stats-row", children=[
-    stat_card("Total Plasmids", _total_plasmids,
-              f"PLSDB {overview.get('total',0):,} + NCBI {overview.get('ncbi_extra',0):,}",
-              COLORS["accent"]),
-    # stat_card("AMR Annotations", overview.get("total_amr", 0), "A", COLORS["accent2"]),
-    # stat_card("Virulence Annotations", overview.get("total_virulence_factors", 0), "V", COLORS["accent4"]),
-    # stat_card("Total Annotations", overview.get("total_annotations", 0), "T", COLORS["accent3"]),
+STATS_ROW = html.Div(className="hero-banner", children=[
+    html.Div(className="hero-inner", children=[
+        html.Img(src="/assets/logo.png", className="hero-logo"),
+        html.Div(className="hero-stats", children=[
+            html.H2(f"{_total_plasmids:,}", className="hero-number"),
+            html.P("Total Plasmids", className="hero-title"),
+            html.Div(className="hero-breakdown", children=[
+                html.Span(f"PLSDB {overview.get('total',0):,}", className="hero-tag"),
+                html.Span("+", className="hero-plus"),
+                html.Span(f"NCBI {overview.get('ncbi_extra',0):,}", className="hero-tag"),
+            ]),
+            html.Div(className="hero-badges", children=[
+                html.Span(f"{overview.get('total_amr',0):,} AMR", className="badge"),
+                html.Span(f"{overview.get('total_virulence_factors',0):,} Virulence",
+                          className="badge"),
+                html.Span(f"{overview.get('source_RefSeq',0):,} RefSeq", className="badge"),
+                html.Span(f"{overview.get('source_INSDC',0):,} INSDC", className="badge"),
+            ]),
+        ]),
+    ]),
 ])
 
 TABS = html.Div(className="tabs-container", children=[
