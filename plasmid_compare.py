@@ -11,7 +11,7 @@ import subprocess
 import tempfile
 
 
-def compare_plasmids(accessions, sequences, names=None):
+def compare_plasmids(accessions, sequences, names=None, features_list=None):
     """
     Compare multiple plasmid sequences.
     Returns a base64-encoded PNG of the comparison plot + alignment data.
@@ -20,9 +20,12 @@ def compare_plasmids(accessions, sequences, names=None):
         accessions: list of accession strings
         sequences: list of DNA sequence strings
         names: optional list of display names
+        features_list: optional list of CDS feature lists (one per plasmid)
     """
     if not names:
         names = accessions
+    if not features_list:
+        features_list = [[] for _ in sequences]
 
     n = len(sequences)
     if n < 2 or n > 10:
@@ -32,7 +35,7 @@ def compare_plasmids(accessions, sequences, names=None):
     alignments = _run_pairwise_blast(sequences, names)
 
     # Generate comparative circular plot
-    img_b64 = _make_comparison_plot(sequences, names, alignments)
+    img_b64 = _make_comparison_plot(sequences, names, alignments, features_list)
 
     return img_b64, alignments
 
@@ -92,37 +95,67 @@ def _run_pairwise_blast(sequences, names):
     return alignments
 
 
-def _make_comparison_plot(sequences, names, alignments):
-    """Create a pyCirclize multi-ring comparison plot."""
+def _make_comparison_plot(sequences, names, alignments, features_list=None):
+    """Create a pyCirclize multi-ring comparison plot with CDS annotations."""
     import matplotlib
     matplotlib.use("Agg")
     from pycirclize import Circos
     import matplotlib.pyplot as plt
     import matplotlib.patches as mpatches
 
-    # Build sector sizes
-    sectors = {name: len(seq) for name, seq in zip(names, sequences)}
+    if not features_list:
+        features_list = [[] for _ in sequences]
 
-    # Create Circos with one sector per plasmid
+    sectors = {name: len(seq) for name, seq in zip(names, sequences)}
     circos = Circos(sectors, space=8)
 
-    # Color palette for tracks
     colors = ["#4a90d9", "#5cb85c", "#e74c3c", "#f0ad4e", "#9b59b6",
               "#1abc9c", "#e67e22", "#3498db", "#e91e63", "#00bcd4"]
+
+    amr_color = "#e74c3c"
+    mob_color = "#f0ad4e"
 
     for i, sector in enumerate(circos.sectors):
         color = colors[i % len(colors)]
         seq = sequences[i]
+        feats = features_list[i] if i < len(features_list) else []
 
-        # Outer track: sequence backbone
-        track = sector.add_track((85, 95))
-        track.axis(fc=color, alpha=0.3, ec=color, lw=0.5)
+        # Track 1 (outer): CDS genes with labels
+        cds_track = sector.add_track((88, 98))
+        cds_track.axis(fc="#f8f8f8", ec=color, lw=0.5)
 
-        # GC content inner track
-        gc_track = sector.add_track((70, 83))
+        if feats:
+            for f in feats:
+                start = f.get("start", 0)
+                end = f.get("end", 0)
+                gene = f.get("gene") or f.get("locus_tag") or ""
+                product = (f.get("product") or "").lower()
+                strand = f.get("strand", 1)
+
+                # Color by function
+                if any(k in product for k in ("beta-lactamase", "carbapenem",
+                       "aminoglycoside", "resistance")):
+                    fc = amr_color
+                elif any(k in product for k in ("mobilization", "conjugal",
+                         "relaxase", "transfer")):
+                    fc = mob_color
+                elif strand == 1:
+                    fc = color
+                else:
+                    fc = "#7ab87a"
+
+                cds_track.rect(start, end, fc=fc, ec="white", lw=0.3)
+
+                # Label named genes
+                if gene and not gene.startswith(("p", "P")) and len(gene) < 15:
+                    mid = (start + end) / 2
+                    cds_track.text(gene, mid, size=5, r=100,
+                                   adjust_rotation=True)
+
+        # Track 2: GC content
+        gc_track = sector.add_track((73, 86))
         gc_track.axis(fc="#fafafa", ec="#e2ddd5", lw=0.3)
 
-        # Compute GC in windows
         window = max(len(seq) // 100, 100)
         positions = []
         gc_vals = []
@@ -140,13 +173,13 @@ def _make_comparison_plot(sequences, names, alignments):
             )
             gc_track.line(positions, gc_vals, color=color, lw=0.5)
 
-        # Add tick marks
+        # Tick marks
         tick_interval = max(len(seq) // 5, 1000)
         ticks = list(range(0, len(seq), tick_interval))
         labels = [f"{t // 1000}kb" if t >= 1000 else str(t) for t in ticks]
         if labels:
             labels[0] = "0"
-        track.xticks(ticks, labels, label_size=6, label_margin=1)
+        cds_track.xticks(ticks, labels, label_size=6, label_margin=1)
 
     # Draw alignment links between sectors
     if alignments and len(circos.sectors) >= 2:

@@ -3180,28 +3180,29 @@ def run_comparison(n_clicks, accessions_text, upload_contents, upload_filenames)
     if len(sequences) < 2:
         return html.P("Need at least 2 valid sequences.", className="text-muted")
 
-    # Fetch sequences from NCBI
-    sequences = []
-    names = []
-    for acc in accessions:
-        gb_text = _fetch_genbank_text(acc)
-        if not gb_text:
-            return html.P(f"Could not fetch {acc} from NCBI.", className="text-danger")
-        seq = _parse_genbank_sequence(gb_text)
-        if not seq or len(seq) < 100:
-            return html.P(f"{acc}: no sequence data or too short.", className="text-danger")
-        sequences.append(seq)
-        names.append(acc)
+    # Fetch CDS features for each sequence
+    from data_loader import fetch_genbank_features
+    all_features = []
+    for name in names:
+        feats = fetch_genbank_features(name)
+        all_features.append(feats)
 
-    # Run comparison
-    img_b64, alignments = plasmid_compare.compare_plasmids(accessions, sequences, names)
+    # Run comparison with features
+    img_b64, alignments = plasmid_compare.compare_plasmids(
+        names, sequences, names, all_features)
 
     # Build results
     results = []
 
     # Summary badges
-    badges = [html.Span(f"{n}: {len(s):,} bp", className="badge")
-              for n, s in zip(names, sequences)]
+    badges = []
+    for n, s, f in zip(names, sequences, all_features):
+        label = f"{n}: {len(s):,} bp"
+        if f:
+            label += f" ({len(f)} CDS)"
+        else:
+            label += " (no annotations)"
+        badges.append(html.Span(label, className="badge"))
     results.append(html.Div(className="feature-badges", children=badges))
 
     # Comparison image
@@ -3229,17 +3230,54 @@ def run_comparison(n_clicks, accessions_text, upload_contents, upload_filenames)
                 ]),
             ]),
         ]))
+    elif not alignments:
+        results.append(html.P("No BLASTn alignments found (sequences may be too divergent "
+                              "or BLAST not installed on this server).",
+                              className="text-muted", style={"marginTop": "12px"}))
 
-    # Download buttons
-    results.append(html.Div(style={"marginTop": "16px", "display": "flex", "gap": "10px"}, children=[
-        html.Button(f"Download {n} FASTA", id={"type": "dl-fasta", "index": i},
-                    className="btn-secondary", style={"fontSize": "0.8rem"})
-        for i, n in enumerate(names)
-    ]))
+    # CDS annotation tables for each plasmid
+    for n, feats in zip(names, all_features):
+        if feats:
+            results.append(html.Div(className="chart-card", style={"marginTop": "12px"}, children=[
+                html.H3(f"CDS Annotations: {n} ({len(feats)} genes)", className="chart-title"),
+                html.Table(className="analytics-table", children=[
+                    html.Thead(html.Tr([
+                        html.Th("Gene"), html.Th("Product"),
+                        html.Th("Start"), html.Th("End"), html.Th("Strand"),
+                    ])),
+                    html.Tbody([
+                        html.Tr([
+                            html.Td(f.get("gene") or f.get("locus_tag", ""),
+                                    style={"fontWeight": "600"}),
+                            html.Td(f.get("product", "")[:60]),
+                            html.Td(f"{f['start']:,}"),
+                            html.Td(f"{f['end']:,}"),
+                            html.Td("+" if f.get("strand", 1) == 1 else "-"),
+                        ]) for f in feats
+                    ]),
+                ]),
+            ]))
 
-    # Store sequences for download (via dcc.Store)
-    results.append(dcc.Store(id="compare-sequences",
-                             data={"names": names, "sequences": sequences}))
+    # Download section
+    download_items = []
+    for i, (n, s, f) in enumerate(zip(names, sequences, all_features)):
+        fasta = plasmid_compare.export_fasta(n, s)
+        gbk = plasmid_compare.export_genbank(n, s, f)
+        download_items.append(html.Div(style={"marginTop": "8px"}, children=[
+            html.Span(f"{n}: ", style={"fontWeight": "600", "marginRight": "8px"}),
+            html.A("FASTA", href=f"data:text/plain,{fasta}",
+                   download=f"{n}.fasta", className="btn-secondary",
+                   style={"fontSize": "0.8rem", "marginRight": "6px", "padding": "4px 12px"}),
+            html.A("GenBank", href=f"data:text/plain,{gbk}",
+                   download=f"{n}.gbk", className="btn-secondary",
+                   style={"fontSize": "0.8rem", "padding": "4px 12px"}),
+        ]))
+
+    results.append(html.Div(className="chart-card", style={"marginTop": "16px"}, children=[
+        html.H3("Download Annotations", className="chart-title"),
+        html.P("Download each plasmid as FASTA or annotated GenBank format.",
+               className="chart-subtitle"),
+    ] + download_items))
 
     return html.Div(results)
 
