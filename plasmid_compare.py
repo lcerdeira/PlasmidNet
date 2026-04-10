@@ -10,9 +10,6 @@ import re
 import subprocess
 import tempfile
 
-import matplotlib
-matplotlib.use("Agg")
-
 
 def compare_plasmids(accessions, sequences, names=None):
     """
@@ -97,6 +94,8 @@ def _run_pairwise_blast(sequences, names):
 
 def _make_comparison_plot(sequences, names, alignments):
     """Create a pyCirclize multi-ring comparison plot."""
+    import matplotlib
+    matplotlib.use("Agg")
     from pycirclize import Circos
     import matplotlib.pyplot as plt
     import matplotlib.patches as mpatches

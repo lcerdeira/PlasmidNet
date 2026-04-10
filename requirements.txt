@@ -3,6 +3,8 @@ plotly==5.24.1
 pandas==2.2.3
 requests==2.32.3
 gunicorn==23.0.0
+matplotlib>=3.8.0
+pycirclize>=1.7.0
 scikit-learn>=1.4.0
 xgboost>=2.0.0
 shap>=0.44.0
