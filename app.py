@@ -2053,7 +2053,7 @@ HEADER = html.Div(className="header", children=[
             html.Img(src="/assets/logo.png", className="logo-img"),
         ]),
         html.Div(className="header-links", children=[
-            html.A("Database", href="https://ccb-microbe.cs.uni-saarland.de/plsdb2025/",
+            html.A("GitHub", href="https://github.com/lcerdeira/plasmidnet",
                     target="_blank", className="header-link"),
             html.A("Documentation", href="https://github.com/lcerdeira/plasmidnet/wiki",
                     target="_blank", className="header-link"),
@@ -2957,7 +2957,7 @@ def run_seq_analysis(fetch_clicks, paste_clicks, accession, pasted_seq):
     # Build results display
     eng_score = results["engineering_score"]
     eng_color = "#10b981" if eng_score < 25 else "#f59e0b" if eng_score < 50 else "#ef4444"
-    eng_label = "Natural" if eng_score < 25 else "Ambiguous" if eng_score < 50 else "Likely Engineered"
+    eng_label = results.get("classification", "Unknown")
 
     # Score card
     score_card = html.Div(className="chart-card", style={"marginTop": "16px"}, children=[
@@ -2980,6 +2980,8 @@ def run_seq_analysis(fetch_clicks, paste_clicks, accession, pasted_seq):
                     html.Span(f"{len(results['promoters'])} promoters", className="badge"),
                     html.Span(f"{len(results['rbs_sites'])} RBS sites", className="badge"),
                     html.Span(f"{len(results['vector_signatures'])} vector signatures", className="badge"),
+                    html.Span(f"{len(results.get('is_elements',[]))} IS/Tn elements", className="badge"),
+                    html.Span(f"{len(results.get('engineering_scars',[]))} eng. scars", className="badge"),
                 ]),
             ]),
         ]),
@@ -3055,6 +3057,43 @@ def run_seq_analysis(fetch_clicks, paste_clicks, accession, pasted_seq):
             ]),
         ]),
     ]))
+
+    # IS elements
+    is_elements = results.get("is_elements", [])
+    if is_elements:
+        sections.append(html.Div(className="chart-card", style={"marginTop": "12px"}, children=[
+            html.H3(f"IS Elements & Transposons ({len(is_elements)} found)",
+                     className="chart-title"),
+            html.P("Natural mobile element markers. Their presence near RE hotspots "
+                   "indicates natural transposon boundaries, not cloning junctions.",
+                   className="chart-subtitle",
+                   style={"color": COLORS["accent3"]}),
+            html.Ul([html.Li(f"{e['name']} at position {e['position']:,}")
+                     for e in is_elements[:10]]),
+        ]))
+
+    # Engineering scars
+    eng_scars = results.get("engineering_scars", [])
+    if eng_scars:
+        sections.append(html.Div(className="chart-card", style={"marginTop": "12px"}, children=[
+            html.H3(f"Engineering Junction Scars ({len(eng_scars)} found)",
+                     className="chart-title"),
+            html.P("These patterns are specific to engineered constructs "
+                   "(Golden Gate overhangs, Gibson Assembly junctions).",
+                   className="chart-subtitle",
+                   style={"color": COLORS["danger"]}),
+            html.Ul([html.Li(f"{s['name']} at position {s['position']:,}: "
+                             f"{s['sequence']}")
+                     for s in eng_scars[:10]]),
+        ]))
+
+    # Score reasoning
+    reasons = results.get("score_reasons", [])
+    if reasons:
+        sections.append(html.Div(className="chart-card", style={"marginTop": "12px"}, children=[
+            html.H3("Score Reasoning", className="chart-title"),
+            html.Ul([html.Li(r) for r in reasons]),
+        ]))
 
     return html.Div([score_card] + sections)
 

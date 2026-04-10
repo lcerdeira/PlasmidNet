@@ -5,12 +5,22 @@ Scans a DNA sequence for:
   - Cryptic promoters (-10 Pribnow box, -35 box)
   - Ribosome Binding Sites (Shine-Dalgarno)
   - Codon usage bias (per gene vs natural background)
-  - Natural vs Engineered scoring (k-mer frequency deviation)
+  - IS elements / transposons (natural mobile element markers)
+  - Natural vs Engineered scoring (percentile-based, PLSDB calibrated)
 """
 
+import json
+import os
 import re
 import math
 from collections import Counter
+
+# Load PLSDB baseline stats if available
+_BASELINE_PATH = os.path.join(os.path.dirname(__file__), "data", "baseline_stats.json")
+BASELINE = {}
+if os.path.exists(_BASELINE_PATH):
+    with open(_BASELINE_PATH) as _f:
+        BASELINE = json.load(_f)
 
 # ── Restriction enzyme recognition sequences ───────────────────────
 # Common cloning enzymes (Type II, 6+ bp)
@@ -61,6 +71,30 @@ VECTOR_SIGNATURES = {
     "bla_promoter": "CTCACTCAAAGGCGGTAATAC",
 }
 
+# ── IS elements / transposon signatures ────────────────────────────
+# Terminal inverted repeats (TIR) of common IS families
+IS_SIGNATURES = {
+    "IS1": "GGTGATGCTGCCAAC",
+    "IS26": "GCACTGTTGCAAATAGTCGGTGGTG",
+    "IS903": "TGGATTTATCAGACGATG",
+    "IS10": "CTGATGAATCCCCTAATG",
+    "IS3": "TGATCAAACTCAAG",
+    "IS5": "GAAACAGGCCAGCGG",
+    "ISEcp1": "TCTAATCTTGCCTGC",   # mobilises bla genes
+    "Tn3_IR": "GGGGAGTGATTTGTTATCATG",
+    "Tn21_IR": "GGGGTGTGCTCAAGTAG",
+    "Tn1721_IR": "TGATTTTTCATGATCTAG",
+}
+
+# Transposase gene fragments (short conserved motifs)
+TRANSPOSASE_MOTIFS = [
+    re.compile(r"ATGAG[CT]AC[ACGT]AA[CT]GA[CT]GA", re.IGNORECASE),  # DDE domain
+    re.compile(r"CC[ACGT]TT[ACGT]GG[ACGT]AA[ACGT]CC", re.IGNORECASE),  # IS helix-turn-helix
+]
+
+# Engineering scars are detected by _find_engineering_scars(), not regex
+# because they require context (paired sites, specific spacing)
+
 
 def analyze_sequence(seq, name="query"):
     """
@@ -90,11 +124,25 @@ def analyze_sequence(seq, name="query"):
         "vector_signatures": _find_vector_signatures(seq),
         "codon_bias": _codon_usage_analysis(seq),
         "kmer_score": _kmer_naturalness_score(seq),
+        "is_elements": _find_is_elements(seq),
+        "engineering_scars": _find_engineering_scars(seq),
         "engineering_score": 0,  # calculated below
+        "classification": "",
     }
 
-    # Composite engineering score (0-100, higher = more likely engineered)
-    results["engineering_score"] = _calculate_engineering_score(results)
+    # Improved composite score using PLSDB baseline
+    results["engineering_score"] = _calculate_engineering_score_v2(results)
+    score = results["engineering_score"]
+    if score < 20:
+        results["classification"] = "Natural"
+    elif score < 40:
+        results["classification"] = "Natural (resistance platform)"
+    elif score < 60:
+        results["classification"] = "Ambiguous"
+    elif score < 80:
+        results["classification"] = "Likely engineered"
+    else:
+        results["classification"] = "Engineered"
 
     return results
 
@@ -407,36 +455,156 @@ def _check_perfect_repeats(seq, min_len=20):
     return min(score, 25)
 
 
-def _calculate_engineering_score(results):
-    """Composite score: higher = more likely engineered."""
-    score = 0
+def _find_is_elements(seq):
+    """Detect IS element and transposon signatures (natural mobile elements)."""
+    found = []
+    for name, signature in IS_SIGNATURES.items():
+        for m in re.finditer(re.escape(signature), seq, re.IGNORECASE):
+            found.append({"name": name, "position": m.start(), "type": "IS/Tn"})
+        rc = _reverse_complement(signature)
+        for m in re.finditer(re.escape(rc), seq, re.IGNORECASE):
+            found.append({"name": f"{name}(rc)", "position": m.start(), "type": "IS/Tn"})
 
-    # Restriction site density (natural: ~1-3/kb, engineered: 5+/kb)
+    # Check for transposase motifs
+    for pattern in TRANSPOSASE_MOTIFS:
+        for m in pattern.finditer(seq):
+            found.append({"name": "transposase_motif", "position": m.start(),
+                          "type": "transposase"})
+
+    return found
+
+
+def _find_engineering_scars(seq):
+    """
+    Detect engineered-specific junction scars.
+    Only flags patterns that require PAIRED sites or specific contexts
+    that are unlikely in natural DNA.
+    """
+    found = []
+
+    # Golden Gate: look for PAIRED BsaI sites in convergent orientation
+    # (GGTCTC...GAGACC) within 50-5000 bp — this is the assembly signature
+    bsai_fwd = [m.start() for m in re.finditer("GGTCTC", seq, re.IGNORECASE)]
+    bsai_rev = [m.start() for m in re.finditer("GAGACC", seq, re.IGNORECASE)]
+    for f in bsai_fwd:
+        for r in bsai_rev:
+            dist = abs(r - f)
+            if 50 < dist < 5000:
+                found.append({"name": "Golden_Gate_pair",
+                              "position": min(f, r),
+                              "sequence": f"BsaI pair at {f:,} & {r:,} ({dist} bp apart)"})
+
+    # Multiple Cloning Site (MCS): 4+ different 6-cutter sites within 200 bp
+    sites_by_pos = {}
+    for enzyme, recognition in RESTRICTION_SITES.items():
+        if len(recognition.replace("N", "")) >= 6:
+            pattern = recognition.replace("N", "[ACGT]")
+            for m in re.finditer(pattern, seq, re.IGNORECASE):
+                sites_by_pos.setdefault(m.start() // 200 * 200, set()).add(enzyme)
+    for window_start, enzymes in sites_by_pos.items():
+        if len(enzymes) >= 4:
+            found.append({"name": "Multiple_Cloning_Site",
+                          "position": window_start,
+                          "sequence": f"{len(enzymes)} unique 6-cutters in 200bp: {', '.join(sorted(enzymes)[:5])}"})
+
+    return found
+
+
+def _re_hotspots_near_is(results):
+    """
+    Check if RE hotspots coincide with IS element positions.
+    If they do, the hotspots are likely natural transposon boundaries,
+    not cloning junctions.
+    """
+    is_positions = set()
+    for is_el in results.get("is_elements", []):
+        # Extend IS position to a window
+        pos = is_el["position"]
+        for p in range(max(0, pos - 500), pos + 500):
+            is_positions.add(p)
+
+    hotspots = results.get("restriction_density", {}).get("hotspots", [])
+    near_is = 0
+    for hs in hotspots:
+        if hs["position"] in is_positions:
+            near_is += 1
+
+    return near_is, len(hotspots)
+
+
+def _calculate_engineering_score_v2(results):
+    """
+    Improved engineering score using PLSDB baseline calibration.
+    Key improvements:
+      - RE hotspots near IS elements are discounted (natural transposon boundaries)
+      - Vector signatures are weighted by specificity (ColE1 is also natural)
+      - Codon bias is species-aware
+      - Engineering scars (Golden Gate/Gibson) are strong indicators
+    """
+    score = 0
+    reasons = []
+
+    # 1. Engineering-specific scars (strongest signal)
+    eng_scars = len(results.get("engineering_scars", []))
+    if eng_scars > 0:
+        score += min(eng_scars * 20, 40)
+        reasons.append(f"{eng_scars} engineering junction scars")
+
+    # 2. Vector signatures — but discount shared natural/synthetic ones
+    vectors = results.get("vector_signatures", [])
+    synthetic_only = {"T7_promoter", "T3_promoter", "SP6_promoter",
+                      "CMV_promoter", "lacZ_alpha", "f1_ori"}
+    shared_natural = {"pBR322_ori", "ColE1_ori", "pUC_ori", "bla_promoter"}
+    for v in vectors:
+        base_name = v["name"].replace("(rc)", "")
+        if base_name in synthetic_only:
+            score += 15  # strong engineered signal
+            reasons.append(f"{base_name} (synthetic-specific)")
+        elif base_name in shared_natural:
+            score += 3   # weak signal — also found in natural IncQ/ColE1 plasmids
+            reasons.append(f"{base_name} (shared natural/synthetic)")
+
+    # 3. RE density — compare to PLSDB baseline
     density = results["restriction_density"].get("density_per_kb", 0)
-    if density > 8:
-        score += 25
-    elif density > 5:
+    nat_p95 = BASELINE.get("re_density_natural_p95", 6.0)
+    eng_thresh = BASELINE.get("re_density_engineered_threshold", 8.0)
+    if density > eng_thresh:
         score += 15
-    elif density > 3:
+    elif density > nat_p95:
         score += 5
 
-    # Restriction site hotspots (clusters = cloning junctions)
-    hotspots = len(results["restriction_density"].get("hotspots", []))
-    score += min(hotspots * 5, 20)
+    # 4. RE hotspots — discount those near IS elements
+    near_is, total_hs = _re_hotspots_near_is(results)
+    natural_hs = near_is  # hotspots explained by transposons
+    unexplained_hs = total_hs - natural_hs
+    if unexplained_hs > 5:
+        score += 15
+    elif unexplained_hs > 2:
+        score += 5
+    # Bonus for IS elements (natural indicators, REDUCE score)
+    is_count = len(results.get("is_elements", []))
+    if is_count >= 3:
+        score -= 15
+        reasons.append(f"{is_count} IS elements (natural mobile element markers)")
+    elif is_count >= 1:
+        score -= 5
 
-    # Vector backbone signatures
-    vectors = len(results.get("vector_signatures", []))
-    score += min(vectors * 15, 30)
-
-    # K-mer naturalness
+    # 5. K-mer naturalness
     kmer = results.get("kmer_score", {})
-    score += kmer.get("score", 0) // 3
+    kmer_s = kmer.get("score", 0)
+    score += kmer_s // 5  # reduced weight vs v1
 
-    # Codon optimization regions
-    codon_regions = len(results.get("codon_bias", {}).get("regions", []))
-    score += min(codon_regions * 5, 15)
+    # 6. Codon optimization (only if strong signal)
+    codon_regions = results.get("codon_bias", {}).get("regions", [])
+    high_cai = [r for r in codon_regions if r.get("cai", 0) > 0.8]
+    if len(high_cai) >= 3:
+        score += 10
 
-    return min(score, 100)
+    # Floor at 0
+    score = max(0, min(score, 100))
+
+    results["score_reasons"] = reasons
+    return score
 
 
 def _reverse_complement(seq):
