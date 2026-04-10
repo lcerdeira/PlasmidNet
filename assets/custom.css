@@ -41,11 +41,23 @@ body {
     display: block;
 }
 
-.header-title {
-    font-size: 1.2rem;
-    font-weight: 700;
-    color: #0d9488;
-    letter-spacing: -0.3px;
+.header-brand {
+    display: flex;
+    align-items: baseline;
+}
+
+.brand-plasmid {
+    font-size: 1.4rem;
+    font-weight: 800;
+    color: #1e293b;
+    letter-spacing: -0.5px;
+}
+
+.brand-net {
+    font-size: 1.4rem;
+    font-weight: 800;
+    color: #e74c3c;
+    letter-spacing: -0.5px;
 }
 
 .subtitle {
@@ -224,16 +236,22 @@ body {
     border: none !important;
 }
 
+.tab-container .tab-list {
+    flex-wrap: wrap !important;
+}
+
 .tab {
     background: #ffffff !important;
     border: 1px solid #e2ddd5 !important;
     border-radius: 8px 8px 0 0 !important;
     color: #64748b !important;
     font-weight: 500 !important;
-    padding: 10px 24px !important;
-    font-size: 0.9rem !important;
-    margin-right: 4px !important;
+    padding: 8px 16px !important;
+    font-size: 0.85rem !important;
+    margin-right: 3px !important;
+    margin-bottom: 3px !important;
     transition: all 0.2s !important;
+    white-space: nowrap !important;
 }
 
 .tab:hover {

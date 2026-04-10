@@ -2156,13 +2156,17 @@ def make_comobilization_ml_chart():
 
 HEADER = html.Div(className="header", children=[
     html.Div(className="header-content", children=[
-        html.Span("PlasmidNet", className="header-title"),
-        html.Div(className="header-links", children=[
-            html.A("GitHub", href="https://github.com/lcerdeira/plasmidnet",
-                    target="_blank", className="header-link"),
-            html.A("PLSDB", href="https://ccb-microbe.cs.uni-saarland.de/plsdb2025/",
-                    target="_blank", className="header-link"),
+        html.Div(className="header-brand", children=[
+            html.Span("Plasmid", className="brand-plasmid"),
+            html.Span("NET", className="brand-net"),
         ]),
+        html.A(
+            html.Img(src="https://cdn.jsdelivr.net/gh/devicons/devicon/icons/github/github-original.svg",
+                     style={"height": "24px", "width": "24px", "opacity": "0.7"}),
+            href="https://github.com/lcerdeira/plasmidnet",
+            target="_blank", className="header-link",
+            title="View on GitHub",
+        ),
     ]),
 ])
 
@@ -2196,16 +2200,14 @@ TABS = html.Div(className="tabs-container", children=[
         children=[
             dcc.Tab(label="Overview", value="overview", className="tab", selected_className="tab--selected"),
             dcc.Tab(label="Taxonomy", value="taxonomy", className="tab", selected_className="tab--selected"),
-            dcc.Tab(label="AMR Analysis", value="amr", className="tab", selected_className="tab--selected"),
-            dcc.Tab(label="Plasmid Viewer", value="viewer", className="tab", selected_className="tab--selected"),
-            dcc.Tab(label="Inc Groups & Mobility", value="mobility", className="tab", selected_className="tab--selected"),
+            dcc.Tab(label="AMR", value="amr", className="tab", selected_className="tab--selected"),
+            dcc.Tab(label="Viewer", value="viewer", className="tab", selected_className="tab--selected"),
+            dcc.Tab(label="Inc/MOB/IS", value="mobility", className="tab", selected_className="tab--selected"),
             dcc.Tab(label="Correlations", value="correlations", className="tab", selected_className="tab--selected"),
             dcc.Tab(label="Geography", value="geography", className="tab", selected_className="tab--selected"),
             dcc.Tab(label="Analytics", value="analytics", className="tab", selected_className="tab--selected"),
-            dcc.Tab(label="IS/Transposons", value="is_families", className="tab", selected_className="tab--selected"),
             dcc.Tab(label="Compare", value="compare", className="tab", selected_className="tab--selected"),
             dcc.Tab(label="Seq Analysis", value="seqanalysis", className="tab", selected_className="tab--selected"),
-            # dcc.Tab(label="Plasmid Lookup", value="lookup", className="tab", selected_className="tab--selected"),
         ],
     ),
 ])
@@ -2373,6 +2375,33 @@ def mobility_tab():
                     className="chart-subtitle",
                 ),
                 dcc.Graph(figure=make_mpf_chart(), config={"displayModeBar": False}),
+            ]),
+        ]),
+
+        # ── IS Elements & Transposons ──────────────────────────────
+        html.Div(className="correlation-section", style={"marginTop": "28px"}, children=[
+            html.H3("IS Elements & Transposon Families",
+                     className="correlation-heading"),
+            html.P("438,616 PGAP annotations across 72,556 plasmids",
+                   className="chart-subtitle"),
+        ]),
+        html.Div(className="chart-grid-2", children=[
+            html.Div(className="chart-card", children=[
+                html.H3("IS Family Distribution", className="chart-title"),
+                dcc.Graph(figure=make_is_family_chart(),
+                          config={"displayModeBar": False}),
+            ]),
+            html.Div(className="chart-card", children=[
+                html.H3("IS Families by Mobility", className="chart-title"),
+                dcc.Graph(figure=make_is_mobility_chart(),
+                          config={"displayModeBar": False}),
+            ]),
+        ]),
+        html.Div(className="chart-grid-1", children=[
+            html.Div(className="chart-card", children=[
+                html.H3("IS Families by Inc Group", className="chart-title"),
+                dcc.Graph(figure=make_is_inc_heatmap(),
+                          config={"displayModeBar": False}),
             ]),
         ]),
     ])
@@ -3111,8 +3140,6 @@ def render_tab(tab):
         return geography_tab()
     elif tab == "analytics":
         return analytics_tab()
-    elif tab == "is_families":
-        return is_families_tab()
     elif tab == "compare":
         return compare_tab()
     elif tab == "seqanalysis":
