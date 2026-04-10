@@ -1644,6 +1644,59 @@ def make_simpson_paradox_table():
     ])
 
 
+def make_umap_chart(color_by="mobility"):
+    """UMAP scatter plot of plasmid feature space."""
+    umap_path = os.path.join(os.path.dirname(__file__), "data", "umap_embedding.npz")
+    if not os.path.exists(umap_path):
+        return go.Figure()
+
+    import numpy as np
+    data = np.load(umap_path, allow_pickle=True)
+    df = pd.DataFrame({
+        "UMAP1": data["x"], "UMAP2": data["y"],
+        "Mobility": data["mobility"], "Genus": data["genus"],
+        "Country": data["country"], "Host": data["host"],
+        "Accession": data["acc"],
+    })
+
+    color_map = {
+        "mobility": {"col": "Mobility", "palette": {
+            "conjugative": COLORS["accent3"],
+            "mobilizable": COLORS["accent"],
+            "non-mobilizable": COLORS["accent4"],
+        }},
+        "genus": {"col": "Genus", "palette": None},
+        "host": {"col": "Host", "palette": None},
+    }
+
+    cfg = color_map.get(color_by, color_map["mobility"])
+    col = cfg["col"]
+
+    if cfg["palette"]:
+        fig = px.scatter(df, x="UMAP1", y="UMAP2", color=col,
+                         color_discrete_map=cfg["palette"],
+                         hover_data=["Accession", "Genus", "Mobility"],
+                         opacity=0.5)
+    else:
+        # Limit to top 8 categories
+        top = df[col].value_counts().head(8).index.tolist()
+        df_plot = df[df[col].isin(top)]
+        fig = px.scatter(df_plot, x="UMAP1", y="UMAP2", color=col,
+                         color_discrete_sequence=px.colors.qualitative.Set2,
+                         hover_data=["Accession", "Mobility"],
+                         opacity=0.5)
+
+    fig.update_traces(marker_size=3)
+    fig.update_layout(
+        template=PLOTLY_TEMPLATE, paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)", font_color=COLORS["text"],
+        margin=dict(t=10, b=10, l=10, r=10), height=550,
+        xaxis_title="UMAP 1", yaxis_title="UMAP 2",
+        legend=dict(font_size=10),
+    )
+    return fig
+
+
 def make_xgboost_shap_chart():
     """XGBoost + SHAP: feature importance with interaction effects."""
     import xgboost as xgb
@@ -2835,6 +2888,29 @@ def analytics_tab():
             html.P("Confound decomposition: are regional mobility differences "
                    "biological or sampling bias?",
                    className="chart-subtitle"),
+        ]),
+
+        # --- 0. UMAP Clustering ---
+        html.Div(className="correlation-section", children=[
+            html.H3("Plasmid Feature Space (UMAP)", className="correlation-heading"),
+            html.Div(className="chart-grid-2", children=[
+                html.Div(className="chart-card", children=[
+                    html.H3("Coloured by Mobility", className="chart-title"),
+                    html.P("15,000 plasmids embedded in 2D by Inc group, genus, "
+                           "host, length, GC. Clusters = natural plasmid ecotypes.",
+                           className="chart-subtitle"),
+                    dcc.Graph(figure=make_umap_chart("mobility"),
+                              config={"scrollZoom": True}),
+                ]),
+                html.Div(className="chart-card", children=[
+                    html.H3("Coloured by Host Genus", className="chart-title"),
+                    html.P("Same embedding coloured by bacterial genus. "
+                           "Species-specific clusters reveal host-plasmid associations.",
+                           className="chart-subtitle"),
+                    dcc.Graph(figure=make_umap_chart("genus"),
+                              config={"scrollZoom": True}),
+                ]),
+            ]),
         ]),
 
         # --- 1. Matched comparison ---
