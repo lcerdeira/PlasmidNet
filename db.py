@@ -1296,6 +1296,131 @@ def is_family_by_inc():
     return inc_is
 
 
+# ── Transposon / Integron / KPC analytics ──────────────────────────
+
+def kpc_context_analysis():
+    """Analyse the genetic context around blaKPC genes database-wide."""
+    # KPC variants
+    variants = q("""
+        SELECT gene_symbol, COUNT(DISTINCT NUCCORE_ACC) as cnt
+        FROM amr WHERE gene_symbol LIKE '%KPC%'
+        GROUP BY gene_symbol ORDER BY cnt DESC LIMIT 20
+    """)
+
+    # Gene context (within 5kb)
+    context = q("""
+        SELECT a2.gene_symbol AS gene, a2.drug_class,
+               COUNT(DISTINCT a1.NUCCORE_ACC) AS cnt
+        FROM amr a1
+        JOIN amr a2 ON a1.NUCCORE_ACC = a2.NUCCORE_ACC
+        WHERE a1.gene_symbol LIKE '%KPC%' AND a2.gene_symbol NOT LIKE '%KPC%'
+          AND a2.gene_symbol != ''
+          AND a1.input_gene_start IS NOT NULL AND a2.input_gene_start IS NOT NULL
+          AND ABS(CAST(a1.input_gene_start AS INT) - CAST(a2.input_gene_start AS INT)) < 5000
+        GROUP BY a2.gene_symbol ORDER BY cnt DESC LIMIT 20
+    """)
+
+    # KPC by Inc group
+    kpc_inc = {}
+    rows = q("""
+        SELECT t.rep_type, COUNT(DISTINCT a.NUCCORE_ACC) as cnt
+        FROM amr a JOIN typing t ON a.NUCCORE_ACC = t.NUCCORE_ACC
+        WHERE a.gene_symbol LIKE '%KPC%' AND t.rep_type != ''
+        GROUP BY t.rep_type ORDER BY cnt DESC
+    """)
+    for r in rows:
+        for rt in r["rep_type"].split(","):
+            rt = rt.strip()
+            if rt:
+                kpc_inc[rt] = kpc_inc.get(rt, 0) + r["cnt"]
+
+    # KPC by mobility
+    kpc_mob = q("""
+        SELECT t.predicted_mobility, COUNT(DISTINCT a.NUCCORE_ACC) as cnt
+        FROM amr a JOIN typing t ON a.NUCCORE_ACC = t.NUCCORE_ACC
+        WHERE a.gene_symbol LIKE '%KPC%'
+        GROUP BY t.predicted_mobility ORDER BY cnt DESC
+    """)
+
+    total_kpc = scalar("SELECT COUNT(DISTINCT NUCCORE_ACC) FROM amr WHERE gene_symbol LIKE '%KPC%'")
+
+    return {
+        "total": total_kpc,
+        "variants": variants,
+        "context": context,
+        "inc_groups": dict(sorted(kpc_inc.items(), key=lambda x: -x[1])[:15]),
+        "mobility": {r["predicted_mobility"]: r["cnt"] for r in kpc_mob},
+    }
+
+
+def integron_ml_features():
+    """
+    Build feature matrix to predict integron carriage.
+    Target: plasmid has qacEdelta1 + sul1 (class 1 integron).
+    """
+    # Positive: plasmids with integron
+    positives = q("""
+        SELECT DISTINCT a1.NUCCORE_ACC
+        FROM amr a1
+        JOIN amr a2 ON a1.NUCCORE_ACC = a2.NUCCORE_ACC
+        WHERE a1.gene_symbol = 'qacEdelta1' AND a2.gene_symbol = 'sul1'
+    """)
+    pos_accs = {r["NUCCORE_ACC"] for r in positives}
+
+    # Get features for all plasmids
+    rows = q("""
+        SELECT n.NUCCORE_ACC, n.NUCCORE_Length AS length, n.NUCCORE_GC AS gc,
+               t.predicted_mobility AS mobility, t.rep_type,
+               tx.TAXONOMY_genus AS genus
+        FROM nuccore n
+        JOIN typing t ON n.NUCCORE_ACC = t.NUCCORE_ACC
+        JOIN taxonomy tx ON n.TAXONOMY_UID = tx.TAXONOMY_UID
+        WHERE t.predicted_mobility != '' AND tx.TAXONOMY_genus != ''
+          AND n.NUCCORE_Length > 0
+    """)
+
+    for r in rows:
+        r["has_integron"] = 1 if r["NUCCORE_ACC"] in pos_accs else 0
+
+    return rows
+
+
+def transposon_amr_cooccurrence():
+    """Which IS families co-occur with which AMR drug classes."""
+    import re as re_mod
+    # Get IS family per plasmid from PGAP
+    pgap = q("""
+        SELECT NUCCORE_ACC, product FROM pgap_features
+        WHERE category = 'TRANSPOSASE'
+    """)
+    plasmid_is = {}
+    for r in pgap:
+        m = re_mod.search(r"(IS\w+)\s+family", r["product"])
+        if m:
+            fam = m.group(1)
+            plasmid_is.setdefault(r["NUCCORE_ACC"], set()).add(fam)
+
+    # Get AMR drug class per plasmid
+    amr_rows = q("""
+        SELECT NUCCORE_ACC, drug_class FROM amr
+        WHERE drug_class IS NOT NULL AND drug_class != ''
+    """)
+    plasmid_amr = {}
+    for r in amr_rows:
+        plasmid_amr.setdefault(r["NUCCORE_ACC"], set()).add(r["drug_class"])
+
+    # Build co-occurrence matrix
+    cooccur = {}
+    for acc, is_fams in plasmid_is.items():
+        amr_classes = plasmid_amr.get(acc, set())
+        for is_fam in is_fams:
+            for amr_cls in amr_classes:
+                cooccur.setdefault(is_fam, {})
+                cooccur[is_fam][amr_cls] = cooccur[is_fam].get(amr_cls, 0) + 1
+
+    return cooccur
+
+
 # ── Data export ────────────────────────────────────────────────────
 
 EXPORT_QUERIES = {

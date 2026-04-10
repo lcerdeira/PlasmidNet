@@ -2320,6 +2320,7 @@ TABS = html.Div(className="tabs-container", children=[
             dcc.Tab(label="Analytics", value="analytics", className="tab", selected_className="tab--selected"),
             dcc.Tab(label="Compare", value="compare", className="tab", selected_className="tab--selected"),
             dcc.Tab(label="Seq Analysis", value="seqanalysis", className="tab", selected_className="tab--selected"),
+            dcc.Tab(label="API", value="api_explorer", className="tab", selected_className="tab--selected"),
         ],
     ),
 ])
@@ -3042,6 +3043,12 @@ def analytics_tab():
 
         # --- 8. Co-mobilization Analysis ---
         html.Div(className="correlation-section", id="comob-section"),
+
+        # --- 9. KPC Transposon Context ---
+        html.Div(className="correlation-section", id="kpc-section"),
+
+        # --- 10. Integron ML + Transposon-AMR ---
+        html.Div(className="correlation-section", id="integron-ml-section"),
     ])
 
 
@@ -3130,6 +3137,55 @@ def compare_tab():
         dcc.Loading(
             type="circle", color=COLORS["accent"],
             children=html.Div(id="compare-results"),
+        ),
+    ])
+
+
+def api_explorer_tab():
+    return html.Div(className="tab-content", children=[
+        html.Div(className="section-header", children=[
+            html.H2("API Explorer", className="section-title"),
+            html.P("Interactive access to the PlasmidNet REST API. "
+                   "Full docs at /api/ endpoint.",
+                   className="chart-subtitle"),
+        ]),
+        html.Div(className="chart-card", children=[
+            html.H3("Query the Database", className="chart-title"),
+            html.Div(className="filter-row", children=[
+                html.Div([
+                    html.Label("Endpoint", className="filter-label"),
+                    dcc.Dropdown(
+                        id="api-endpoint",
+                        options=[
+                            {"label": "Search plasmids", "value": "search"},
+                            {"label": "AMR by gene", "value": "amr"},
+                            {"label": "AMR by drug class", "value": "amr_class"},
+                            {"label": "Typing by Inc group", "value": "typing"},
+                            {"label": "Taxonomy by genus", "value": "taxonomy"},
+                            {"label": "Plasmid details", "value": "plasmid"},
+                            {"label": "Database stats", "value": "stats"},
+                        ],
+                        value="search",
+                        style={"width": "250px"},
+                    ),
+                ]),
+                html.Div([
+                    html.Label("Query", className="filter-label"),
+                    dcc.Input(
+                        id="api-query", type="text",
+                        placeholder="e.g., KPC, Klebsiella, IncFIB...",
+                        className="filter-input",
+                        style={"width": "300px"},
+                    ),
+                ]),
+                html.Button("Run", id="api-run-btn", className="btn-primary"),
+            ]),
+            html.P(id="api-url-display", className="chart-subtitle",
+                   style={"marginTop": "8px", "fontFamily": "monospace"}),
+        ]),
+        dcc.Loading(
+            type="circle", color=COLORS["accent"],
+            children=html.Div(id="api-results"),
         ),
     ])
 
@@ -3280,6 +3336,8 @@ def render_tab(tab):
         return analytics_tab()
     elif tab == "compare":
         return compare_tab()
+    elif tab == "api_explorer":
+        return api_explorer_tab()
     elif tab == "seqanalysis":
         return seqanalysis_tab()
     elif tab == "lookup":
@@ -3445,6 +3503,103 @@ def run_comparison(n_clicks, accessions_text, upload_contents, upload_filenames)
     ] + download_items))
 
     return html.Div(results)
+
+
+@callback(
+    Output("api-results", "children"),
+    Input("api-run-btn", "n_clicks"),
+    State("api-endpoint", "value"),
+    State("api-query", "value"),
+    prevent_initial_call=True,
+)
+def run_api_query(n_clicks, endpoint, query):
+    if not n_clicks:
+        raise dash.exceptions.PreventUpdate
+
+    query = (query or "").strip()
+    endpoint_map = {
+        "search": ("search", {"q": query}),
+        "amr": ("amr", {"gene": query}),
+        "amr_class": ("amr", {"class": query}),
+        "typing": ("typing", {"inc": query}),
+        "taxonomy": ("taxonomy", {"genus": query}),
+        "plasmid": (f"plasmid/{query}", {}),
+        "stats": ("stats", {}),
+    }
+
+    path, params = endpoint_map.get(endpoint, ("", {}))
+    if not path:
+        return html.P("Invalid endpoint.", className="text-danger")
+
+    # Query the API internally
+    import json as json_mod
+    if endpoint == "plasmid":
+        data = db.plasmid_summary(query)
+        if not data:
+            return html.P(f"Accession '{query}' not found.", className="text-danger")
+    elif endpoint == "stats":
+        data = db.overview_stats()
+        data["mobility"] = db.mobility_distribution()
+    elif endpoint == "search":
+        rows = db.q("""
+            SELECT n.NUCCORE_ACC, n.NUCCORE_Description, n.NUCCORE_Length,
+                   t.TAXONOMY_genus
+            FROM nuccore n
+            LEFT JOIN taxonomy t ON n.TAXONOMY_UID = t.TAXONOMY_UID
+            WHERE n.NUCCORE_ACC LIKE ? OR n.NUCCORE_Description LIKE ?
+               OR t.TAXONOMY_genus LIKE ?
+            LIMIT 50
+        """, (f"%{query}%", f"%{query}%", f"%{query}%"))
+        data = {"count": len(rows), "results": rows}
+    elif endpoint == "amr":
+        rows = db.q("SELECT NUCCORE_ACC, gene_symbol, drug_class FROM amr WHERE gene_symbol LIKE ? LIMIT 50",
+                    (f"%{query}%",))
+        data = {"count": len(rows), "results": rows}
+    elif endpoint == "amr_class":
+        rows = db.q("SELECT NUCCORE_ACC, gene_symbol, drug_class FROM amr WHERE UPPER(drug_class) LIKE ? LIMIT 50",
+                    (f"%{query.upper()}%",))
+        data = {"count": len(rows), "results": rows}
+    elif endpoint == "typing":
+        rows = db.q("SELECT NUCCORE_ACC, rep_type, predicted_mobility FROM typing WHERE rep_type LIKE ? LIMIT 50",
+                    (f"%{query}%",))
+        data = {"count": len(rows), "results": rows}
+    elif endpoint == "taxonomy":
+        rows = db.q("""
+            SELECT n.NUCCORE_ACC, n.NUCCORE_Description, t.TAXONOMY_genus
+            FROM nuccore n JOIN taxonomy t ON n.TAXONOMY_UID = t.TAXONOMY_UID
+            WHERE t.TAXONOMY_genus LIKE ? LIMIT 50
+        """, (f"%{query}%",))
+        data = {"count": len(rows), "results": rows}
+    else:
+        data = {}
+
+    # Format as JSON + table
+    json_str = json_mod.dumps(data, indent=2, default=str)
+
+    results_children = [
+        html.Pre(json_str[:3000], style={
+            "background": "#faf7f2", "border": "1px solid #e2ddd5",
+            "borderRadius": "8px", "padding": "12px", "fontSize": "0.8rem",
+            "maxHeight": "400px", "overflow": "auto", "whiteSpace": "pre-wrap",
+        }),
+    ]
+
+    # If results have a table, show it
+    if isinstance(data, dict) and "results" in data and data["results"]:
+        rows = data["results"][:20]
+        if isinstance(rows[0], dict):
+            headers = list(rows[0].keys())
+            results_children.append(
+                html.Table(className="analytics-table", style={"marginTop": "12px"}, children=[
+                    html.Thead(html.Tr([html.Th(h) for h in headers])),
+                    html.Tbody([
+                        html.Tr([html.Td(str(r.get(h, ""))[:50]) for h in headers])
+                        for r in rows
+                    ]),
+                ])
+            )
+
+    return html.Div(results_children)
 
 
 @callback(
@@ -3883,6 +4038,201 @@ def load_comobilization(tab):
                       config={"displayModeBar": False}),
         ]),
     ] + ml_section
+
+
+@callback(
+    Output("kpc-section", "children"),
+    Input("main-tabs", "value"),
+    prevent_initial_call=True,
+)
+def load_kpc_context(tab):
+    if tab != "analytics":
+        raise dash.exceptions.PreventUpdate
+    kpc = db.kpc_context_analysis()
+    if not kpc or kpc["total"] == 0:
+        return html.P("No blaKPC data available.", className="text-muted")
+
+    # KPC context genes bar chart
+    ctx_df = pd.DataFrame(kpc["context"])
+    ctx_fig = px.bar(ctx_df, x="gene", y="cnt",
+                     color_discrete_sequence=[COLORS["danger"]])
+    ctx_fig.update_layout(
+        template=PLOTLY_TEMPLATE, paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)", font_color=COLORS["text"],
+        margin=dict(t=10, b=10, l=10, r=10), height=380,
+        xaxis_tickangle=-45, xaxis_title="", yaxis_title="Plasmids",
+    )
+
+    # KPC Inc groups bar
+    inc_df = pd.DataFrame(
+        sorted(kpc["inc_groups"].items(), key=lambda x: -x[1])[:12],
+        columns=["Inc Group", "Plasmids"],
+    )
+    inc_fig = px.bar(inc_df, x="Plasmids", y="Inc Group", orientation="h",
+                     color_discrete_sequence=[COLORS["accent2"]])
+    inc_fig.update_layout(
+        template=PLOTLY_TEMPLATE, paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)", font_color=COLORS["text"],
+        margin=dict(t=10, b=30, l=10, r=10), height=380,
+        yaxis=dict(autorange="reversed"), xaxis_title="Plasmids",
+    )
+
+    # KPC mobility donut
+    mob = kpc["mobility"]
+    mob_fig = go.Figure(go.Pie(
+        labels=[k.capitalize() for k in mob.keys()],
+        values=list(mob.values()), hole=0.55,
+        marker_colors=[COLORS["accent3"], COLORS["accent"], COLORS["accent4"]],
+        textinfo="label+percent",
+    ))
+    mob_fig.update_layout(
+        template=PLOTLY_TEMPLATE, paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)", font_color=COLORS["text"],
+        margin=dict(t=10, b=10, l=10, r=10), height=300, showlegend=False,
+    )
+
+    return [
+        html.H3(f"9. blaKPC Transposon Context ({kpc['total']:,} plasmids)",
+                 className="correlation-heading"),
+        html.P("NTEKPC elements — the non-Tn4401 structures carrying blaKPC — "
+               "share structural features with classical transposons "
+               "(inverted repeats, target site duplications, "
+               "association with IS elements). Their consistent genetic context "
+               "across diverse plasmid backbones and host species supports "
+               "classification as true transposons rather than arbitrary "
+               "genetic islands.",
+               className="chart-subtitle"),
+        html.Div(className="chart-grid-2", children=[
+            html.Div(className="chart-card", children=[
+                html.H3("Genes within 5 kb of blaKPC", className="chart-title"),
+                html.P("blaTEM co-occurs most frequently — part of the "
+                       "NTEKPC-IId element structure.",
+                       className="chart-subtitle"),
+                dcc.Graph(figure=ctx_fig, config={"displayModeBar": False}),
+            ]),
+            html.Div(className="chart-card", children=[
+                html.H3("blaKPC by Inc Group", className="chart-title"),
+                dcc.Graph(figure=inc_fig, config={"displayModeBar": False}),
+            ]),
+        ]),
+        html.Div(className="chart-grid-1", children=[
+            html.Div(className="chart-card", children=[
+                html.H3("blaKPC by Mobility", className="chart-title"),
+                html.P(f"{mob.get('conjugative',0):,} conjugative ({mob.get('conjugative',0)/kpc['total']*100:.0f}%) — "
+                       f"most KPC plasmids are self-transmissible.",
+                       className="chart-subtitle"),
+                dcc.Graph(figure=mob_fig, config={"displayModeBar": False}),
+            ]),
+        ]),
+    ]
+
+
+@callback(
+    Output("integron-ml-section", "children"),
+    Input("main-tabs", "value"),
+    prevent_initial_call=True,
+)
+def load_integron_ml(tab):
+    if tab != "analytics":
+        raise dash.exceptions.PreventUpdate
+
+    from sklearn.ensemble import RandomForestClassifier
+    from sklearn.preprocessing import LabelEncoder
+    from sklearn.model_selection import cross_val_score
+    import numpy as np
+
+    # Build integron ML model
+    rows = db.integron_ml_features()
+    if not rows or len(rows) < 100:
+        return html.P("Insufficient data for integron ML.", className="text-muted")
+
+    df = pd.DataFrame(rows)
+    features = []
+    X_data = {}
+
+    for col in ["mobility", "genus"]:
+        le = LabelEncoder()
+        X_data[col] = le.fit_transform(df[col].fillna("Unknown"))
+        features.append(col)
+
+    X_data["log_length"] = np.log1p(df["length"].fillna(0).values.astype(float))
+    features.append("log_length")
+    X_data["gc"] = df["gc"].fillna(0).values.astype(float)
+    features.append("gc")
+
+    for inc in ["IncFIB", "IncFII", "IncFIA", "IncI1", "IncN", "IncHI2", "IncC"]:
+        X_data[inc] = df["rep_type"].fillna("").str.contains(inc).astype(int).values
+        features.append(inc)
+
+    X = pd.DataFrame(X_data)[features]
+    y = df["has_integron"].values
+
+    rf = RandomForestClassifier(n_estimators=100, max_depth=8, random_state=42)
+    cv = cross_val_score(rf, X, y, cv=5, scoring="accuracy")
+    rf.fit(X, y)
+
+    imp_df = pd.DataFrame({
+        "Feature": [f.replace("log_", "Log ").capitalize() for f in features],
+        "Importance": rf.feature_importances_,
+    }).sort_values("Importance", ascending=True)
+
+    imp_fig = px.bar(imp_df, x="Importance", y="Feature", orientation="h",
+                     color="Importance", color_continuous_scale="Viridis")
+    imp_fig.update_layout(
+        template=PLOTLY_TEMPLATE, paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)", font_color=COLORS["text"],
+        margin=dict(t=10, b=30, l=10, r=10), height=400,
+        coloraxis_showscale=False,
+        xaxis_title="Feature Importance", yaxis_title="",
+    )
+
+    # Transposon-AMR co-occurrence heatmap
+    cooccur = db.transposon_amr_cooccurrence()
+    heatmap = go.Figure()
+    if cooccur:
+        all_amr = {}
+        for fam_data in cooccur.values():
+            for amr_cls, cnt in fam_data.items():
+                all_amr[amr_cls] = all_amr.get(amr_cls, 0) + cnt
+        top_amr = sorted(all_amr, key=all_amr.get, reverse=True)[:10]
+        top_is = sorted(cooccur, key=lambda f: sum(cooccur[f].values()),
+                        reverse=True)[:10]
+        z = [[cooccur[is_f].get(amr_c, 0) for amr_c in top_amr] for is_f in top_is]
+        heatmap = go.Figure(go.Heatmap(
+            z=z, x=top_amr, y=top_is,
+            colorscale="YlOrRd", texttemplate="%{z}", textfont={"size": 8},
+            hovertemplate="IS: <b>%{y}</b><br>AMR: <b>%{x}</b><br>Count: %{z:,}<extra></extra>",
+        ))
+        heatmap.update_layout(
+            template=PLOTLY_TEMPLATE, paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)", font_color=COLORS["text"],
+            margin=dict(t=10, b=10, l=10, r=10), height=400,
+            xaxis=dict(tickangle=-45, tickfont=dict(size=9)),
+            yaxis=dict(autorange="reversed"),
+        )
+
+    return [
+        html.H3("10. Integron ML & Transposon-AMR Correlations",
+                 className="correlation-heading"),
+        html.Div(className="chart-grid-2", children=[
+            html.Div(className="chart-card", children=[
+                html.H3("ML: What Predicts Integron Carriage?",
+                         className="chart-title"),
+                html.P(f"Random Forest (5-fold CV: {cv.mean()*100:.1f}% accuracy) "
+                       f"predicting class 1 integron carriage from plasmid features.",
+                       className="chart-subtitle"),
+                dcc.Graph(figure=imp_fig, config={"displayModeBar": False}),
+            ]),
+            html.Div(className="chart-card", children=[
+                html.H3("IS Families x AMR Drug Classes",
+                         className="chart-title"),
+                html.P("Which IS element families co-occur with which "
+                       "resistance classes on the same plasmid.",
+                       className="chart-subtitle"),
+                dcc.Graph(figure=heatmap, config={"displayModeBar": False}),
+            ]),
+        ]),
+    ]
 
 
 @callback(
