@@ -3044,10 +3044,13 @@ def analytics_tab():
         # --- 8. Co-mobilization Analysis ---
         html.Div(className="correlation-section", id="comob-section"),
 
-        # --- 9. KPC Transposon Context ---
+        # --- 9. Retro-mobilization & HGT Routes ---
+        html.Div(className="correlation-section", id="retromob-section"),
+
+        # --- 10. KPC Transposon Context ---
         html.Div(className="correlation-section", id="kpc-section"),
 
-        # --- 10. Integron ML + Transposon-AMR ---
+        # --- 11. Integron ML + Transposon-AMR ---
         html.Div(className="correlation-section", id="integron-ml-section"),
     ])
 
@@ -4041,6 +4044,88 @@ def load_comobilization(tab):
 
 
 @callback(
+    Output("retromob-section", "children"),
+    Input("main-tabs", "value"),
+    prevent_initial_call=True,
+)
+def load_retromob(tab):
+    if tab != "analytics":
+        raise dash.exceptions.PreventUpdate
+
+    retro = db.retromobilization_analysis()
+
+    # Transfer routes bar chart
+    routes = retro["routes"]
+    route_df = pd.DataFrame([
+        {"Route": k, "Plasmids": v} for k, v in routes.items()
+    ]).sort_values("Plasmids", ascending=True)
+    route_fig = px.bar(route_df, x="Plasmids", y="Route", orientation="h",
+                       color_discrete_sequence=[COLORS["accent2"]])
+    route_fig.update_layout(
+        template=PLOTLY_TEMPLATE, paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)", font_color=COLORS["text"],
+        margin=dict(t=10, b=30, l=10, r=10), height=300,
+        xaxis_title="Non-mobilizable plasmids", yaxis_title="",
+    )
+
+    # Retro-mob Inc groups bar
+    inc_df = pd.DataFrame(
+        sorted(retro["retro_inc"].items(), key=lambda x: -x[1])[:10],
+        columns=["Inc Group (conjugative)", "Non-mob partners"],
+    )
+    inc_fig = px.bar(inc_df, x="Non-mob partners",
+                     y="Inc Group (conjugative)", orientation="h",
+                     color_discrete_sequence=[COLORS["accent4"]])
+    inc_fig.update_layout(
+        template=PLOTLY_TEMPLATE, paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)", font_color=COLORS["text"],
+        margin=dict(t=10, b=30, l=10, r=10), height=350,
+        yaxis=dict(autorange="reversed"),
+    )
+
+    pct_retro = retro["retro_mob"] / retro["total_nonmob"] * 100
+
+    return [
+        html.H3(f"9. Retro-mobilization & HGT Routes for Non-mobilizable Plasmids",
+                 className="correlation-heading"),
+        html.P([
+            f"{retro['total_nonmob']:,} non-mobilizable plasmids lack autonomous "
+            f"transfer machinery, yet ",
+            html.B(f"{retro['retro_mob']:,} ({pct_retro:.0f}%)"),
+            " share a bacterial host with a conjugative plasmid — enabling "
+            "retro-mobilization (reverse transfer), where the conjugative "
+            "plasmid's T4SS pulls non-mobilizable DNA back into the donor cell.",
+        ], className="chart-subtitle"),
+        html.Div(className="chart-grid-2", children=[
+            html.Div(className="chart-card", children=[
+                html.H3("Transfer Routes for Non-mobilizable Plasmids",
+                         className="chart-title"),
+                html.P("Multiple HGT mechanisms can mobilise plasmids "
+                       "that lack their own transfer genes.",
+                       className="chart-subtitle"),
+                dcc.Graph(figure=route_fig, config={"displayModeBar": False}),
+                html.Div(className="detail-grid", children=[
+                    html.Div(className="detail-item", children=[
+                        html.Span("AMR at risk", className="detail-label"),
+                        html.Span(f"{retro['retro_mob_amr']:,} non-mob with AMR + conj partner",
+                                  className="detail-value",
+                                  style={"color": COLORS["danger"]}),
+                    ]),
+                ]),
+            ]),
+            html.Div(className="chart-card", children=[
+                html.H3("Conjugative Partners in Retro-mobilization",
+                         className="chart-title"),
+                html.P("Which conjugative Inc groups most frequently co-exist "
+                       "with non-mobilizable plasmids.",
+                       className="chart-subtitle"),
+                dcc.Graph(figure=inc_fig, config={"displayModeBar": False}),
+            ]),
+        ]),
+    ]
+
+
+@callback(
     Output("kpc-section", "children"),
     Input("main-tabs", "value"),
     prevent_initial_call=True,
@@ -4092,7 +4177,7 @@ def load_kpc_context(tab):
     )
 
     return [
-        html.H3(f"9. blaKPC Transposon Context ({kpc['total']:,} plasmids)",
+        html.H3(f"10. blaKPC Transposon Context ({kpc['total']:,} plasmids)",
                  className="correlation-heading"),
         html.P("NTEKPC elements — the non-Tn4401 structures carrying blaKPC — "
                "share structural features with classical transposons "
@@ -4212,7 +4297,7 @@ def load_integron_ml(tab):
         )
 
     return [
-        html.H3("10. Integron ML & Transposon-AMR Correlations",
+        html.H3("11. Integron ML & Transposon-AMR Correlations",
                  className="correlation-heading"),
         html.Div(className="chart-grid-2", children=[
             html.Div(className="chart-card", children=[

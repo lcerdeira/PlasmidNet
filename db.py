@@ -1421,6 +1421,113 @@ def transposon_amr_cooccurrence():
     return cooccur
 
 
+# ── Retro-mobilization / HGT routes ───────────────────────────────
+
+def retromobilization_analysis():
+    """
+    Analyse transfer routes for non-mobilizable plasmids:
+    1. Retro-mobilization (conjugative partner in same host → can pull DNA back)
+    2. Co-mobilization relay (mobilizable partner)
+    3. Conduction (co-integration via shared IS elements)
+    4. Transduction (small plasmids fit in phage capsids)
+    """
+    total_nonmob = scalar(
+        "SELECT COUNT(*) FROM typing WHERE predicted_mobility='non-mobilizable'"
+    ) or 1
+
+    # Retro-mobilization: non-mob + conjugative in same host
+    retro = scalar("""
+        SELECT COUNT(DISTINCT n2.NUCCORE_ACC)
+        FROM nuccore n1
+        JOIN nuccore n2 ON n1.BIOSAMPLE_UID = n2.BIOSAMPLE_UID
+                       AND n1.NUCCORE_ACC != n2.NUCCORE_ACC
+        JOIN typing t1 ON n1.NUCCORE_ACC = t1.NUCCORE_ACC
+        JOIN typing t2 ON n2.NUCCORE_ACC = t2.NUCCORE_ACC
+        WHERE t1.predicted_mobility = 'conjugative'
+          AND t2.predicted_mobility = 'non-mobilizable'
+          AND n1.BIOSAMPLE_UID > 0
+    """) or 0
+
+    # Retro-mob with AMR
+    retro_amr = scalar("""
+        SELECT COUNT(DISTINCT n2.NUCCORE_ACC)
+        FROM nuccore n1
+        JOIN nuccore n2 ON n1.BIOSAMPLE_UID = n2.BIOSAMPLE_UID
+                       AND n1.NUCCORE_ACC != n2.NUCCORE_ACC
+        JOIN typing t1 ON n1.NUCCORE_ACC = t1.NUCCORE_ACC
+        JOIN typing t2 ON n2.NUCCORE_ACC = t2.NUCCORE_ACC
+        JOIN amr a ON n2.NUCCORE_ACC = a.NUCCORE_ACC
+        WHERE t1.predicted_mobility = 'conjugative'
+          AND t2.predicted_mobility = 'non-mobilizable'
+          AND n1.BIOSAMPLE_UID > 0
+          AND a.drug_class IS NOT NULL AND a.drug_class != ''
+    """) or 0
+
+    # Mobilizable relay partner
+    mob_relay = scalar("""
+        SELECT COUNT(DISTINCT n2.NUCCORE_ACC)
+        FROM nuccore n1
+        JOIN nuccore n2 ON n1.BIOSAMPLE_UID = n2.BIOSAMPLE_UID
+                       AND n1.NUCCORE_ACC != n2.NUCCORE_ACC
+        JOIN typing t1 ON n1.NUCCORE_ACC = t1.NUCCORE_ACC
+        JOIN typing t2 ON n2.NUCCORE_ACC = t2.NUCCORE_ACC
+        WHERE t1.predicted_mobility = 'mobilizable'
+          AND t2.predicted_mobility = 'non-mobilizable'
+          AND n1.BIOSAMPLE_UID > 0
+    """) or 0
+
+    # Small non-mob (<10kb) = transduction candidates
+    small = scalar("""
+        SELECT COUNT(*) FROM nuccore n
+        JOIN typing t ON n.NUCCORE_ACC = t.NUCCORE_ACC
+        WHERE t.predicted_mobility = 'non-mobilizable' AND n.NUCCORE_Length < 10000
+    """) or 0
+
+    # Non-mob with IS elements (conduction potential via co-integration)
+    conduction = scalar("""
+        SELECT COUNT(DISTINCT p.NUCCORE_ACC) FROM pgap_features p
+        JOIN typing t ON p.NUCCORE_ACC = t.NUCCORE_ACC
+        WHERE t.predicted_mobility = 'non-mobilizable'
+          AND p.category = 'TRANSPOSASE'
+    """) or 0
+
+    # Conjugative Inc groups in retro-mob pairs
+    retro_inc = {}
+    rows = q("""
+        SELECT t1.rep_type, COUNT(DISTINCT n2.NUCCORE_ACC) as cnt
+        FROM nuccore n1
+        JOIN nuccore n2 ON n1.BIOSAMPLE_UID = n2.BIOSAMPLE_UID
+                       AND n1.NUCCORE_ACC != n2.NUCCORE_ACC
+        JOIN typing t1 ON n1.NUCCORE_ACC = t1.NUCCORE_ACC
+        JOIN typing t2 ON n2.NUCCORE_ACC = t2.NUCCORE_ACC
+        WHERE t1.predicted_mobility = 'conjugative'
+          AND t2.predicted_mobility = 'non-mobilizable'
+          AND n1.BIOSAMPLE_UID > 0 AND t1.rep_type != ''
+        GROUP BY t1.rep_type ORDER BY cnt DESC LIMIT 50
+    """)
+    for r in rows:
+        for rt in r["rep_type"].split(","):
+            rt = rt.strip()
+            if rt:
+                retro_inc[rt] = retro_inc.get(rt, 0) + r["cnt"]
+
+    return {
+        "total_nonmob": total_nonmob,
+        "retro_mob": retro,
+        "retro_mob_amr": retro_amr,
+        "mob_relay": mob_relay,
+        "small_transduction": small,
+        "conduction_potential": conduction,
+        "retro_inc": dict(sorted(retro_inc.items(), key=lambda x: -x[1])[:12]),
+        "routes": {
+            "Retro-mobilization": retro,
+            "Mobilizable relay": mob_relay,
+            "Transduction (<10kb)": small,
+            "Conduction (has IS/Tn)": conduction,
+        },
+    }
+
+
 # ── Data export ────────────────────────────────────────────────────
 
 EXPORT_QUERIES = {
