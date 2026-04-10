@@ -17,7 +17,7 @@ PlasmidNet uses a local SQLite database built from PLSDB and NCBI data.
 | `nuccore` | 72,556 | Plasmid metadata (accession, length, GC, topology, dates) |
 | `taxonomy` | 7,439 | Host taxonomy (kingdom to strain) |
 | `typing` | 72,556 | MOB typing (Inc groups, mobility, relaxase, MPF, pMLST) |
-| `amr` | 251,138 | AMR gene annotations (gene, drug class, positions) |
+| `amr` | 600,896 | AMR gene annotations from PLSDB + NCBI (gene, drug class, positions) |
 | `plasmidfinder` | 60,619 | PlasmidFinder typing results |
 | `typing_markers` | 333,648 | MOB suite detailed markers |
 | `pgap_features` | 613,902 | PGAP annotations (TA, phage, transposase) |
