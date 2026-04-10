@@ -126,6 +126,8 @@ def analyze_sequence(seq, name="query"):
         "kmer_score": _kmer_naturalness_score(seq),
         "is_elements": _find_is_elements(seq),
         "engineering_scars": _find_engineering_scars(seq),
+        "direct_repeats": find_direct_repeats(seq),
+        "ntekpc": detect_ntekpc(seq),
         "engineering_score": 0,  # calculated below
         "classification": "",
     }
@@ -605,6 +607,181 @@ def _calculate_engineering_score_v2(results):
 
     results["score_reasons"] = reasons
     return score
+
+
+def find_direct_repeats(seq, min_len=4, max_len=12, max_dist=5000):
+    """
+    Find direct repeats (target site duplications) flanking IS/transposon insertions.
+    TSDs are typically 2-9 bp direct repeats created when a transposon inserts.
+    """
+    repeats = []
+    # Search for short direct repeats at various distances
+    for dr_len in range(max_len, min_len - 1, -1):
+        for i in range(0, len(seq) - max_dist - dr_len):
+            motif = seq[i:i + dr_len]
+            if "N" in motif:
+                continue
+            # Search for the same motif downstream (within max_dist)
+            search_region = seq[i + 100:i + max_dist]
+            pos2 = search_region.find(motif)
+            if pos2 >= 0:
+                actual_pos2 = i + 100 + pos2
+                distance = actual_pos2 - i
+                # Only report if distance suggests a transposon (500bp - 5kb)
+                if 500 <= distance <= max_dist:
+                    repeats.append({
+                        "sequence": motif,
+                        "length": dr_len,
+                        "pos1": i,
+                        "pos2": actual_pos2,
+                        "distance": distance,
+                    })
+                    break  # one hit per start position
+        if len(repeats) >= 20:
+            break
+    # Deduplicate overlapping
+    seen = set()
+    unique = []
+    for r in sorted(repeats, key=lambda x: -x["length"]):
+        key = (r["pos1"] // 50, r["pos2"] // 50)
+        if key not in seen:
+            unique.append(r)
+            seen.add(key)
+    return unique[:15]
+
+
+def detect_ntekpc(seq):
+    """
+    Detect NTEKPC (Non-Tn4401 Elements carrying blaKPC) and Tn4401 variants.
+    Returns identified transposon elements around blaKPC.
+    """
+    results = []
+    seq_upper = seq.upper()
+
+    # blaKPC gene signature (conserved region)
+    kpc_pattern = re.compile(r"ATGTCACTGTATCGCCGTC", re.IGNORECASE)
+    kpc_matches = list(kpc_pattern.finditer(seq_upper))
+
+    if not kpc_matches:
+        # Try partial match
+        kpc_partial = re.compile(r"CACTGTATCGCCGTC", re.IGNORECASE)
+        kpc_matches = list(kpc_partial.finditer(seq_upper))
+
+    if not kpc_matches:
+        return results
+
+    for kpc_m in kpc_matches:
+        kpc_pos = kpc_m.start()
+
+        # Check for Tn4401 flanking sequences
+        # Tn4401 left IR: ~GGGGAGTGATTTGTTATCATG
+        tn4401_left = re.search(r"GGGG.GTGAT.TGTTATC", seq_upper[max(0, kpc_pos-5000):kpc_pos])
+        tn4401_right = re.search(r"GATAA.ATC.C.CCCC", seq_upper[kpc_pos:kpc_pos+5000])
+
+        if tn4401_left and tn4401_right:
+            results.append({
+                "type": "Tn4401",
+                "kpc_position": kpc_pos,
+                "note": "blaKPC within Tn4401 (classic ISKpn7-blaKPC-ISKpn6 structure)",
+            })
+        else:
+            # Check for NTEKPC signatures
+            # ISKpn27 upstream of blaKPC (NTEKPC-IId)
+            iskpn27 = re.search(r"TCTAATCTTGCCTGC", seq_upper[max(0, kpc_pos-3000):kpc_pos])
+            # Tn3-like tnpA downstream
+            tn3_down = re.search(r"ATGAG.AC.AA.GA.GA", seq_upper[kpc_pos:kpc_pos+3000])
+
+            if iskpn27:
+                results.append({
+                    "type": "NTEKPC-IId",
+                    "kpc_position": kpc_pos,
+                    "note": "blaKPC within NTEKPC-IId (ISKpn27-blaKPC-tnpA structure)",
+                })
+            elif tn3_down:
+                results.append({
+                    "type": "NTEKPC (variant)",
+                    "kpc_position": kpc_pos,
+                    "note": "blaKPC in non-Tn4401 context with Tn3-like transposase",
+                })
+            else:
+                results.append({
+                    "type": "blaKPC (unknown context)",
+                    "kpc_position": kpc_pos,
+                    "note": "blaKPC detected but flanking transposon structure not recognized",
+                })
+
+    return results
+
+
+def detect_retromobilization(features):
+    """
+    Identify retro-mobilization potential:
+    Plasmids that have oriT but lack relaxase and T4SS.
+    These can only be mobilized if a conjugative plasmid provides
+    the transfer machinery in trans.
+
+    Args:
+        features: list of CDS feature dicts from GenBank
+    Returns:
+        dict with retro-mobilization assessment
+    """
+    has_orit = False
+    has_relaxase = False
+    has_t4ss = False
+    has_mob = False
+    mob_genes = []
+    tra_genes = []
+
+    relaxase_kw = ("relaxase", "moba", "nick", "trai")
+    t4ss_kw = ("t4ss", "type iv", "mating pair", "mpf", "trag", "traw",
+               "virb", "trbe", "trbj")
+    orit_kw = ("orit", "origin of transfer")
+    mob_kw = ("mobilization", "moba", "mobc", "mobd")
+
+    for f in features:
+        gene = (f.get("gene") or "").lower()
+        product = (f.get("product") or "").lower()
+
+        if any(k in product for k in orit_kw) or gene == "orit":
+            has_orit = True
+        if any(k in product for k in relaxase_kw):
+            has_relaxase = True
+        if any(k in product for k in t4ss_kw):
+            has_t4ss = True
+        if any(k in product for k in mob_kw) or gene.startswith("mob"):
+            has_mob = True
+            mob_genes.append(gene or product[:30])
+        if gene.startswith("tra") or gene.startswith("trb"):
+            tra_genes.append(gene)
+
+    # Classification
+    if has_t4ss and has_relaxase:
+        category = "Self-transmissible (conjugative)"
+        detail = "Has both relaxase and T4SS — can transfer independently"
+    elif has_relaxase and not has_t4ss:
+        category = "Mobilizable"
+        detail = "Has relaxase but no T4SS — requires helper conjugative plasmid"
+    elif has_orit and not has_relaxase and not has_t4ss:
+        category = "Retro-mobilizable (oriT only)"
+        detail = ("Has oriT but no relaxase or T4SS — can only be mobilized "
+                  "if a conjugative plasmid provides ALL transfer machinery in trans")
+    elif has_mob and not has_t4ss:
+        category = "Mobilizable (MOB genes)"
+        detail = f"Has mobilization genes ({', '.join(mob_genes[:5])}) but no T4SS"
+    else:
+        category = "Non-mobilizable"
+        detail = "No transfer or mobilization genes detected"
+
+    return {
+        "category": category,
+        "detail": detail,
+        "has_orit": has_orit,
+        "has_relaxase": has_relaxase,
+        "has_t4ss": has_t4ss,
+        "has_mob": has_mob,
+        "mob_genes": mob_genes[:10],
+        "tra_genes": tra_genes[:10],
+    }
 
 
 def _reverse_complement(seq):

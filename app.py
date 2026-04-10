@@ -62,6 +62,10 @@ app = dash.Dash(
 )
 server = app.server  # for gunicorn
 
+# Register REST API
+from api import api_bp
+server.register_blueprint(api_bp)
+
 # ---------------------------------------------------------------------------
 # Color palette
 # ---------------------------------------------------------------------------
@@ -3509,6 +3513,90 @@ def run_seq_analysis(fetch_clicks, paste_clicks, accession, pasted_seq):
             html.H3("Score Reasoning", className="chart-title"),
             html.Ul([html.Li(r) for r in reasons]),
         ]))
+
+    # NTEKPC detection
+    ntekpc = results.get("ntekpc", [])
+    if ntekpc:
+        sections.append(html.Div(className="chart-card", style={"marginTop": "12px"}, children=[
+            html.H3(f"KPC Transposon Detection ({len(ntekpc)} found)",
+                     className="chart-title"),
+            html.Ul([
+                html.Li([
+                    html.Span(n["type"], style={"fontWeight": "700",
+                              "color": COLORS["danger"]}),
+                    f" at position {n['kpc_position']:,} — {n['note']}",
+                ]) for n in ntekpc
+            ]),
+        ]))
+
+    # Direct repeats (TSDs)
+    dr = results.get("direct_repeats", [])
+    if dr:
+        sections.append(html.Div(className="chart-card", style={"marginTop": "12px"}, children=[
+            html.H3(f"Direct Repeats / Target Site Duplications ({len(dr)} found)",
+                     className="chart-title"),
+            html.P("Short direct repeats flanking inserted elements — "
+                   "hallmark of transposon insertion.",
+                   className="chart-subtitle"),
+            html.Table(className="analytics-table", children=[
+                html.Thead(html.Tr([
+                    html.Th("Sequence"), html.Th("Length"),
+                    html.Th("Position 1"), html.Th("Position 2"),
+                    html.Th("Distance"),
+                ])),
+                html.Tbody([
+                    html.Tr([
+                        html.Td(r["sequence"], style={"fontFamily": "monospace"}),
+                        html.Td(f"{r['length']} bp"),
+                        html.Td(f"{r['pos1']:,}"),
+                        html.Td(f"{r['pos2']:,}"),
+                        html.Td(f"{r['distance']:,} bp"),
+                    ]) for r in dr[:10]
+                ]),
+            ]),
+        ]))
+
+    # Retro-mobilization (needs GenBank features)
+    if "fetch" in triggered and accession:
+        from data_loader import fetch_genbank_features
+        feats = fetch_genbank_features(accession)
+        if feats:
+            retro = seq_analysis.detect_retromobilization(feats)
+            cat_color = {
+                "Self-transmissible (conjugative)": COLORS["accent3"],
+                "Mobilizable": COLORS["accent"],
+                "Retro-mobilizable (oriT only)": COLORS["accent4"],
+                "Mobilizable (MOB genes)": COLORS["accent"],
+                "Non-mobilizable": COLORS["text_muted"],
+            }
+            sections.append(html.Div(className="chart-card", style={"marginTop": "12px"}, children=[
+                html.H3("Mobilization Assessment", className="chart-title"),
+                html.P([
+                    html.Span(retro["category"],
+                              style={"fontWeight": "700", "fontSize": "1.1rem",
+                                     "color": cat_color.get(retro["category"], COLORS["text"])}),
+                ]),
+                html.P(retro["detail"], className="chart-subtitle"),
+                html.Div(className="detail-grid", children=[
+                    html.Div(className="detail-item", children=[
+                        html.Span("oriT", className="detail-label"),
+                        html.Span("Yes" if retro["has_orit"] else "No", className="detail-value"),
+                    ]),
+                    html.Div(className="detail-item", children=[
+                        html.Span("Relaxase", className="detail-label"),
+                        html.Span("Yes" if retro["has_relaxase"] else "No", className="detail-value"),
+                    ]),
+                    html.Div(className="detail-item", children=[
+                        html.Span("T4SS", className="detail-label"),
+                        html.Span("Yes" if retro["has_t4ss"] else "No", className="detail-value"),
+                    ]),
+                    html.Div(className="detail-item", children=[
+                        html.Span("MOB genes", className="detail-label"),
+                        html.Span(", ".join(retro["mob_genes"][:5]) or "None",
+                                  className="detail-value"),
+                    ]),
+                ]),
+            ]))
 
     return html.Div([score_card] + sections)
 
