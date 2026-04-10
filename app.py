@@ -2164,13 +2164,16 @@ HEADER = html.Div(className="header", children=[
             html.Span("Plasmid", className="brand-plasmid"),
             html.Span("NET", className="brand-net"),
         ]),
-        html.A(
-            html.Img(src="https://cdn.jsdelivr.net/gh/devicons/devicon/icons/github/github-original.svg",
-                     style={"height": "24px", "width": "24px", "opacity": "0.7"}),
-            href="https://github.com/lcerdeira/plasmidnet",
-            target="_blank", className="header-link",
-            title="View on GitHub",
-        ),
+        html.Div(className="header-links", children=[
+            html.A("Docs", href="https://plasmidnet.readthedocs.io/en/latest/",
+                    target="_blank", className="header-link", title="Documentation"),
+            html.A(
+                html.Img(src="https://cdn.jsdelivr.net/gh/devicons/devicon/icons/github/github-original.svg",
+                         style={"height": "20px", "width": "20px", "opacity": "0.7"}),
+                href="https://github.com/lcerdeira/plasmidnet",
+                target="_blank", className="header-link", title="View on GitHub",
+            ),
+        ]),
     ]),
 ])
 
@@ -2192,6 +2195,51 @@ STATS_ROW = html.Div(className="hero-banner", children=[
                           className="badge"),
                 html.Span(f"{overview.get('source_RefSeq',0):,} RefSeq", className="badge"),
                 html.Span(f"{overview.get('source_INSDC',0):,} INSDC", className="badge"),
+            ]),
+        ]),
+    ]),
+    # About section
+    html.Div(className="hero-about", children=[
+        html.Details([
+            html.Summary("About PlasmidNet", className="about-toggle"),
+            html.Div(className="about-text", children=[
+                html.P([
+                    "Plasmids are the primary vehicles of antimicrobial resistance (AMR) "
+                    "gene dissemination among bacteria, yet understanding their global "
+                    "distribution, mobility, and evolutionary dynamics remains fragmented "
+                    "across disconnected databases and tools."
+                ]),
+                html.P([
+                    "PlasmidNet was created to bridge this gap \u2014 providing a single, "
+                    "interactive platform that unifies ",
+                    html.B("182,362 complete plasmids"),
+                    " from PLSDB and NCBI with comprehensive analytics for AMR, "
+                    "virulence, mobilization, geographic spread, and sequence analysis. "
+                    "By combining classical epidemiological approaches with machine learning, "
+                    "PlasmidNet enables researchers to ask questions that span the full "
+                    "complexity of plasmid biology:"
+                ]),
+                html.Ul([
+                    html.Li("Which incompatibility groups carry the most dangerous "
+                            "resistance genes, and are they spreading?"),
+                    html.Li("Are regional differences in plasmid mobility driven by "
+                            "biology or sequencing bias?"),
+                    html.Li("Which mobilizable plasmids are hitchhiking on conjugative "
+                            "ones, and can we predict co-mobilization?"),
+                    html.Li("Is a plasmid sequence natural or engineered \u2014 and what "
+                            "cloning artifacts reveal about its history?"),
+                ]),
+                html.P([
+                    "Built for the One Health community \u2014 from clinical microbiologists "
+                    "tracking hospital outbreaks to environmental scientists monitoring "
+                    "resistance in soil and water. PlasmidNet is open-source and freely "
+                    "available, with a REST API for programmatic access and full "
+                    "documentation at ",
+                    html.A("plasmidnet.readthedocs.io",
+                           href="https://plasmidnet.readthedocs.io/en/latest/",
+                           target="_blank", style={"color": COLORS["accent"]}),
+                    ".",
+                ]),
             ]),
         ]),
     ]),
