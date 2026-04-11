@@ -488,6 +488,7 @@ def main():
     cur.execute("CREATE INDEX idx_typing_rep ON typing(rep_type)")
     cur.execute("CREATE INDEX idx_nuccore_topo ON nuccore(NUCCORE_Topology)")
     cur.execute("CREATE INDEX idx_nuccore_tax ON nuccore(TAXONOMY_UID)")
+    cur.execute("CREATE INDEX idx_nuccore_biosample ON nuccore(BIOSAMPLE_UID)")
     cur.execute("CREATE INDEX idx_pf_acc ON plasmidfinder(NUCCORE_ACC)")
     cur.execute("CREATE INDEX idx_tm_acc ON typing_markers(NUCCORE_ACC)")
     if os.path.exists(pgap_path):

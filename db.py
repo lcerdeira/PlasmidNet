@@ -1386,37 +1386,30 @@ def integron_ml_features():
 
 
 def transposon_amr_cooccurrence():
-    """Which IS families co-occur with which AMR drug classes."""
+    """Which IS families co-occur with which AMR drug classes. SQL-based."""
     import re as re_mod
-    # Get IS family per plasmid from PGAP
-    pgap = q("""
-        SELECT NUCCORE_ACC, product FROM pgap_features
-        WHERE category = 'TRANSPOSASE'
+    # Use SQL JOIN to avoid loading everything into Python
+    rows = q("""
+        SELECT p.product, a.drug_class, COUNT(DISTINCT p.NUCCORE_ACC) AS cnt
+        FROM pgap_features p
+        JOIN amr a ON p.NUCCORE_ACC = a.NUCCORE_ACC
+        WHERE p.category = 'TRANSPOSASE'
+          AND a.drug_class IS NOT NULL AND a.drug_class != ''
+        GROUP BY p.product, a.drug_class
+        HAVING cnt >= 10
+        ORDER BY cnt DESC
+        LIMIT 2000
     """)
-    plasmid_is = {}
-    for r in pgap:
-        m = re_mod.search(r"(IS\w+)\s+family", r["product"])
-        if m:
-            fam = m.group(1)
-            plasmid_is.setdefault(r["NUCCORE_ACC"], set()).add(fam)
 
-    # Get AMR drug class per plasmid
-    amr_rows = q("""
-        SELECT NUCCORE_ACC, drug_class FROM amr
-        WHERE drug_class IS NOT NULL AND drug_class != ''
-    """)
-    plasmid_amr = {}
-    for r in amr_rows:
-        plasmid_amr.setdefault(r["NUCCORE_ACC"], set()).add(r["drug_class"])
-
-    # Build co-occurrence matrix
     cooccur = {}
-    for acc, is_fams in plasmid_is.items():
-        amr_classes = plasmid_amr.get(acc, set())
-        for is_fam in is_fams:
-            for amr_cls in amr_classes:
-                cooccur.setdefault(is_fam, {})
-                cooccur[is_fam][amr_cls] = cooccur[is_fam].get(amr_cls, 0) + 1
+    for r in rows:
+        m = re_mod.search(r"(IS\w+)\s+family", r["product"])
+        if not m:
+            continue
+        is_fam = m.group(1)
+        amr_cls = r["drug_class"]
+        cooccur.setdefault(is_fam, {})
+        cooccur[is_fam][amr_cls] = cooccur[is_fam].get(amr_cls, 0) + r["cnt"]
 
     return cooccur
 
