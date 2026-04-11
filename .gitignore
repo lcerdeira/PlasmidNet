@@ -9,10 +9,33 @@ build/
 .venv/
 venv/
 env/
-data/*.json
-data/*.db
-data/raw/
 .DS_Store
 *.log
 .vscode/
+
+# Data files (built locally, not tracked)
+data/*.db
+data/*.db-shm
+data/*.db-wal
+data/*.json
+data/raw/
+data/gb_*.json
+data/gb_text_*.json
+
+# Figshare exports
 figshare/
+
+# EC2 pipeline results
+amr_results.tsv
+mob_results.csv
+ec2_*.sh
+
+# Heroku (no longer used)
+Procfile
+Aptfile
+runtime.txt
+bin/
+
+# Manuscript outputs
+manuscript/*.docx
+manuscript/*.pdf
