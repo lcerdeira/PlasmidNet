@@ -209,6 +209,7 @@ details[open] .about-toggle::before {
     color: #475569;
     line-height: 1.7;
     max-width: 900px;
+    text-align: justify;
 }
 
 .about-text p {
