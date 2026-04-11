@@ -4595,70 +4595,116 @@ def lookup_plasmid(n_clicks, accession):
 # ---------------------------------------------------------------------------
 # Pre-compute ALL expensive charts (runs once at startup, tabs load instantly)
 # ---------------------------------------------------------------------------
+import time as _time
+import concurrent.futures as _futures
+
+# Ensure indexes exist (fast if already present)
+logger.info("Ensuring database indexes...")
+try:
+    conn = db.get_conn()
+    for idx_sql in [
+        "CREATE INDEX IF NOT EXISTS idx_nuccore_biosample ON nuccore(BIOSAMPLE_UID)",
+        "CREATE INDEX IF NOT EXISTS idx_pgap_acc ON pgap_features(NUCCORE_ACC)",
+        "CREATE INDEX IF NOT EXISTS idx_pgap_cat ON pgap_features(category)",
+        "CREATE INDEX IF NOT EXISTS idx_pgap_acc_cat ON pgap_features(NUCCORE_ACC, category)",
+        "CREATE INDEX IF NOT EXISTS idx_amr_acc ON amr(NUCCORE_ACC)",
+        "CREATE INDEX IF NOT EXISTS idx_amr_drug ON amr(drug_class)",
+    ]:
+        conn.execute(idx_sql)
+    conn.commit()
+except Exception as e:
+    logger.warning(f"Index creation: {e}")
+
 logger.info("Pre-computing all charts...")
 _shap_fig, _shap_acc = make_xgboost_shap_chart()
 logger.info(f"  SHAP done ({_shap_acc}%)")
 
 # Cache all chart figures as module-level variables
 _CACHE = {}
+
+def _compute_with_timeout(name, fn, timeout=120):
+    """Run fn with a timeout; return None on failure."""
+    try:
+        with _futures.ThreadPoolExecutor(max_workers=1) as ex:
+            future = ex.submit(fn)
+            return future.result(timeout=timeout)
+    except _futures.TimeoutError:
+        logger.warning(f"  {name} TIMED OUT after {timeout}s — will compute on demand")
+        return None
+    except Exception as e:
+        logger.warning(f"  {name} FAILED: {e} — will compute on demand")
+        return None
+
 _cache_fns = [
-    ("rf", make_feature_importance_chart),
-    ("matched", make_matched_comparison),
-    ("rarefaction", make_rarefaction_chart),
-    ("amr_trends", make_temporal_trends_chart),
-    ("inc_trends", make_inc_trends_chart),
-    ("amr_cooccur", make_amr_cooccurrence_chart),
-    ("umap_mob", lambda: make_umap_chart("mobility")),
-    ("umap_genus", lambda: make_umap_chart("genus")),
-    ("simpson", make_simpson_paradox_table),
-    ("global_map", make_global_map),
-    ("country_mob", make_country_mobility_chart),
-    ("country_inc", make_country_inc_chart),
-    ("temporal_anim", make_temporal_animation),
-    ("host_dist", make_host_distribution_chart),
-    ("host_mob", make_host_mobility_chart),
-    ("host_inc", make_host_inc_heatmap),
-    ("host_amr", make_host_amr_heatmap),
-    ("is_family", make_is_family_chart),
-    ("is_mob", make_is_mobility_chart),
-    ("is_inc", make_is_inc_heatmap),
-    ("integron_sec", _build_integron_section),
-    ("comob_sec", _build_comob_section),
-    ("retromob_sec", _build_retromob_section),
-    ("kpc_sec", _build_kpc_section),
-    ("integron_ml_sec", _build_integron_ml_section),
+    ("rf", make_feature_importance_chart, 60),
+    ("matched", make_matched_comparison, 60),
+    ("rarefaction", make_rarefaction_chart, 60),
+    ("amr_trends", make_temporal_trends_chart, 60),
+    ("inc_trends", make_inc_trends_chart, 60),
+    ("amr_cooccur", make_amr_cooccurrence_chart, 120),
+    ("umap_mob", lambda: make_umap_chart("mobility"), 120),
+    ("umap_genus", lambda: make_umap_chart("genus"), 120),
+    ("simpson", make_simpson_paradox_table, 60),
+    ("global_map", make_global_map, 60),
+    ("country_mob", make_country_mobility_chart, 60),
+    ("country_inc", make_country_inc_chart, 60),
+    ("temporal_anim", make_temporal_animation, 60),
+    ("host_dist", make_host_distribution_chart, 60),
+    ("host_mob", make_host_mobility_chart, 60),
+    ("host_inc", make_host_inc_heatmap, 60),
+    ("host_amr", make_host_amr_heatmap, 120),
+    ("is_family", make_is_family_chart, 60),
+    ("is_mob", make_is_mobility_chart, 60),
+    ("is_inc", make_is_inc_heatmap, 60),
+    ("integron_sec", _build_integron_section, 120),
+    ("comob_sec", _build_comob_section, 120),
+    ("retromob_sec", _build_retromob_section, 120),
+    ("kpc_sec", _build_kpc_section, 120),
+    ("integron_ml_sec", _build_integron_ml_section, 180),
 ]
-for _name, _fn in _cache_fns:
+for _name, _fn, _timeout in _cache_fns:
+    _t0 = _time.time()
     logger.info(f"  {_name}...")
-    _CACHE[_name] = _fn()
+    _CACHE[_name] = _compute_with_timeout(_name, _fn, _timeout)
+    logger.info(f"  {_name} done ({_time.time() - _t0:.1f}s)")
+
+# For sections that timed out, show a placeholder
+_TIMEOUT_MSG = html.P("This section is still loading. Please refresh in a few minutes.",
+                       className="text-muted", style={"padding": "2rem", "textAlign": "center"})
+
+def _cached_or_fallback(key):
+    """Return cached value, or a placeholder if it timed out."""
+    val = _CACHE.get(key)
+    return val if val is not None else _TIMEOUT_MSG
 
 # Override all heavy functions to return cached results
-make_feature_importance_chart = lambda: _CACHE["rf"]
-make_matched_comparison = lambda: _CACHE["matched"]
-make_rarefaction_chart = lambda: _CACHE["rarefaction"]
-make_temporal_trends_chart = lambda: _CACHE["amr_trends"]
-make_inc_trends_chart = lambda: _CACHE["inc_trends"]
-make_amr_cooccurrence_chart = lambda: _CACHE["amr_cooccur"]
-make_umap_chart = lambda c="mobility": _CACHE["umap_mob"] if c == "mobility" else _CACHE["umap_genus"]
-make_simpson_paradox_table = lambda: _CACHE["simpson"]
-make_global_map = lambda: _CACHE["global_map"]
-make_country_mobility_chart = lambda: _CACHE["country_mob"]
-make_country_inc_chart = lambda: _CACHE["country_inc"]
-make_temporal_animation = lambda: _CACHE["temporal_anim"]
-make_host_distribution_chart = lambda: _CACHE["host_dist"]
-make_host_mobility_chart = lambda: _CACHE["host_mob"]
-make_host_inc_heatmap = lambda: _CACHE["host_inc"]
-make_host_amr_heatmap = lambda: _CACHE["host_amr"]
-make_is_family_chart = lambda: _CACHE["is_family"]
-make_is_mobility_chart = lambda: _CACHE["is_mob"]
-make_is_inc_heatmap = lambda: _CACHE["is_inc"]
-_build_integron_section = lambda: _CACHE["integron_sec"]
-_build_comob_section = lambda: _CACHE["comob_sec"]
-_build_retromob_section = lambda: _CACHE["retromob_sec"]
-_build_kpc_section = lambda: _CACHE["kpc_sec"]
-_build_integron_ml_section = lambda: _CACHE["integron_ml_sec"]
+make_feature_importance_chart = lambda: _cached_or_fallback("rf")
+make_matched_comparison = lambda: _cached_or_fallback("matched")
+make_rarefaction_chart = lambda: _cached_or_fallback("rarefaction")
+make_temporal_trends_chart = lambda: _cached_or_fallback("amr_trends")
+make_inc_trends_chart = lambda: _cached_or_fallback("inc_trends")
+make_amr_cooccurrence_chart = lambda: _cached_or_fallback("amr_cooccur")
+make_umap_chart = lambda c="mobility": _cached_or_fallback("umap_mob") if c == "mobility" else _cached_or_fallback("umap_genus")
+make_simpson_paradox_table = lambda: _cached_or_fallback("simpson")
+make_global_map = lambda: _cached_or_fallback("global_map")
+make_country_mobility_chart = lambda: _cached_or_fallback("country_mob")
+make_country_inc_chart = lambda: _cached_or_fallback("country_inc")
+make_temporal_animation = lambda: _cached_or_fallback("temporal_anim")
+make_host_distribution_chart = lambda: _cached_or_fallback("host_dist")
+make_host_mobility_chart = lambda: _cached_or_fallback("host_mob")
+make_host_inc_heatmap = lambda: _cached_or_fallback("host_inc")
+make_host_amr_heatmap = lambda: _cached_or_fallback("host_amr")
+make_is_family_chart = lambda: _cached_or_fallback("is_family")
+make_is_mobility_chart = lambda: _cached_or_fallback("is_mob")
+make_is_inc_heatmap = lambda: _cached_or_fallback("is_inc")
+_build_integron_section = lambda: _cached_or_fallback("integron_sec")
+_build_comob_section = lambda: _cached_or_fallback("comob_sec")
+_build_retromob_section = lambda: _cached_or_fallback("retromob_sec")
+_build_kpc_section = lambda: _cached_or_fallback("kpc_sec")
+_build_integron_ml_section = lambda: _cached_or_fallback("integron_ml_sec")
 
-logger.info("All charts pre-computed! Tabs will load instantly.")
+_cached_count = sum(1 for v in _CACHE.values() if v is not None)
+logger.info(f"Pre-computed {_cached_count}/{len(_CACHE)} charts. Tabs will load instantly.")
 
 # ---------------------------------------------------------------------------
 # Run
