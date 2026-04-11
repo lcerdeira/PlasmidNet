@@ -3039,19 +3039,19 @@ def analytics_tab():
         ]),
 
         # --- 7. Integron & Gene Cassette Analysis ---
-        html.Div(className="correlation-section", id="integron-section"),
+        _build_integron_section(),
 
         # --- 8. Co-mobilization Analysis ---
-        html.Div(className="correlation-section", id="comob-section"),
+        _build_comob_section(),
 
         # --- 9. Retro-mobilization & HGT Routes ---
-        html.Div(className="correlation-section", id="retromob-section"),
+        _build_retromob_section(),
 
         # --- 10. KPC Transposon Context ---
-        html.Div(className="correlation-section", id="kpc-section"),
+        _build_kpc_section(),
 
         # --- 11. Integron ML + Transposon-AMR ---
-        html.Div(className="correlation-section", id="integron-ml-section"),
+        _build_integron_ml_section(),
     ])
 
 
@@ -3953,16 +3953,10 @@ def download_data(n_clicks, dataset):
 
 
 
-@callback(
-    Output("integron-section", "children"),
-    Input("main-tabs", "value"),
-    prevent_initial_call=True,
-)
-def load_integron(tab):
-    if tab != "analytics":
-        raise dash.exceptions.PreventUpdate
+def _build_integron_section():
+    """Build integron & gene cassette section."""
     integ = db.integron_analysis()
-    return [
+    return html.Div(className="correlation-section", children=[
         html.H3(f"7. Class 1 Integrons & Gene Cassettes "
                  f"({integ['class1_total']:,} plasmids)",
                  className="correlation-heading"),
@@ -3984,21 +3978,14 @@ def load_integron(tab):
                           config={"displayModeBar": False}),
             ]),
         ]),
-    ]
+    ])
 
 
-@callback(
-    Output("comob-section", "children"),
-    Input("main-tabs", "value"),
-    prevent_initial_call=True,
-)
-def load_comobilization(tab):
-    if tab != "analytics":
-        raise dash.exceptions.PreventUpdate
+def _build_comob_section():
+    """Build co-mobilization section with relaxase-T4SS and ML."""
     comob = db.comobilization_data()
-
-    # ML predictor
     ml_fig, ml_acc = make_comobilization_ml_chart()
+
     ml_section = []
     if ml_acc:
         ml_section = [
@@ -4017,15 +4004,14 @@ def load_comobilization(tab):
                              className="chart-title"),
                     html.P(f"Random Forest (5-fold CV accuracy: {ml_acc}%) "
                            f"trained to predict whether a mobilizable plasmid "
-                           f"shares a host with a conjugative one. "
-                           f"Relaxase type is the strongest predictor.",
+                           f"shares a host with a conjugative one.",
                            className="chart-subtitle"),
                     dcc.Graph(figure=ml_fig, config={"displayModeBar": False}),
                 ]),
             ]),
         ]
 
-    return [
+    return html.Div(className="correlation-section", children=[
         html.H3(f"8. Co-mobilization Analysis "
                  f"({comob['pct_colocated']}% of mobilizable plasmids "
                  f"share a host with a conjugative plasmid)",
@@ -4034,24 +4020,16 @@ def load_comobilization(tab):
             html.H3("Conjugative x Mobilizable Inc Group Pairs",
                      className="chart-title"),
             html.P("Which conjugative Inc groups co-exist with which mobilizable "
-                   "Inc groups in the same bacterial host. "
-                   "High values = frequent co-mobilization via conjugative T4SS.",
+                   "Inc groups in the same bacterial host.",
                    className="chart-subtitle"),
             dcc.Graph(figure=make_comobilization_chart(comob),
                       config={"displayModeBar": False}),
         ]),
-    ] + ml_section
+    ] + ml_section)
 
 
-@callback(
-    Output("retromob-section", "children"),
-    Input("main-tabs", "value"),
-    prevent_initial_call=True,
-)
-def load_retromob(tab):
-    if tab != "analytics":
-        raise dash.exceptions.PreventUpdate
-
+def _build_retromob_section():
+    """Build retro-mobilization section (called directly, not via callback)."""
     retro = db.retromobilization_analysis()
 
     # Transfer routes bar chart
@@ -4085,7 +4063,7 @@ def load_retromob(tab):
 
     pct_retro = retro["retro_mob"] / retro["total_nonmob"] * 100
 
-    return [
+    return html.Div(className="correlation-section", children=[
         html.H3(f"9. Retro-mobilization & HGT Routes for Non-mobilizable Plasmids",
                  className="correlation-heading"),
         html.P([
@@ -4122,20 +4100,14 @@ def load_retromob(tab):
                 dcc.Graph(figure=inc_fig, config={"displayModeBar": False}),
             ]),
         ]),
-    ]
+    ])
 
 
-@callback(
-    Output("kpc-section", "children"),
-    Input("main-tabs", "value"),
-    prevent_initial_call=True,
-)
-def load_kpc_context(tab):
-    if tab != "analytics":
-        raise dash.exceptions.PreventUpdate
+def _build_kpc_section():
+    """Build KPC transposon context section."""
     kpc = db.kpc_context_analysis()
     if not kpc or kpc["total"] == 0:
-        return html.P("No blaKPC data available.", className="text-muted")
+        return html.Div()
 
     # KPC context genes bar chart
     ctx_df = pd.DataFrame(kpc["context"])
@@ -4176,7 +4148,7 @@ def load_kpc_context(tab):
         margin=dict(t=10, b=10, l=10, r=10), height=300, showlegend=False,
     )
 
-    return [
+    return html.Div(className="correlation-section", children=[
         html.H3(f"10. blaKPC Transposon Context ({kpc['total']:,} plasmids)",
                  className="correlation-heading"),
         html.P("NTEKPC elements — the non-Tn4401 structures carrying blaKPC — "
@@ -4209,18 +4181,11 @@ def load_kpc_context(tab):
                 dcc.Graph(figure=mob_fig, config={"displayModeBar": False}),
             ]),
         ]),
-    ]
+    ])
 
 
-@callback(
-    Output("integron-ml-section", "children"),
-    Input("main-tabs", "value"),
-    prevent_initial_call=True,
-)
-def load_integron_ml(tab):
-    if tab != "analytics":
-        raise dash.exceptions.PreventUpdate
-
+def _build_integron_ml_section():
+    """Build integron ML + transposon-AMR section."""
     from sklearn.ensemble import RandomForestClassifier
     from sklearn.preprocessing import LabelEncoder
     from sklearn.model_selection import cross_val_score
@@ -4296,7 +4261,7 @@ def load_integron_ml(tab):
             yaxis=dict(autorange="reversed"),
         )
 
-    return [
+    return html.Div(className="correlation-section", children=[
         html.H3("11. Integron ML & Transposon-AMR Correlations",
                  className="correlation-heading"),
         html.Div(className="chart-grid-2", children=[
@@ -4317,7 +4282,7 @@ def load_integron_ml(tab):
                 dcc.Graph(figure=heatmap, config={"displayModeBar": False}),
             ]),
         ]),
-    ]
+    ])
 
 
 @callback(
