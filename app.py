@@ -2208,11 +2208,8 @@ def make_comobilization_ml_chart():
 
 
 # ---------------------------------------------------------------------------
-# Pre-compute expensive charts at startup
-# ---------------------------------------------------------------------------
-logger.info("Computing XGBoost + SHAP...")
-_shap_fig, _shap_acc = make_xgboost_shap_chart()
-logger.info(f"SHAP done (accuracy: {_shap_acc}%)")
+# Charts will be pre-computed after all functions are defined (see below)
+_shap_fig = _shap_acc = None
 
 # ---------------------------------------------------------------------------
 # Layout
@@ -4594,6 +4591,74 @@ def lookup_plasmid(n_clicks, accession):
     except Exception as e:
         return html.P(f"Error: {str(e)}", className="text-danger")
 
+
+# ---------------------------------------------------------------------------
+# Pre-compute ALL expensive charts (runs once at startup, tabs load instantly)
+# ---------------------------------------------------------------------------
+logger.info("Pre-computing all charts...")
+_shap_fig, _shap_acc = make_xgboost_shap_chart()
+logger.info(f"  SHAP done ({_shap_acc}%)")
+
+# Cache all chart figures as module-level variables
+_CACHE = {}
+_cache_fns = [
+    ("rf", make_feature_importance_chart),
+    ("matched", make_matched_comparison),
+    ("rarefaction", make_rarefaction_chart),
+    ("amr_trends", make_temporal_trends_chart),
+    ("inc_trends", make_inc_trends_chart),
+    ("amr_cooccur", make_amr_cooccurrence_chart),
+    ("umap_mob", lambda: make_umap_chart("mobility")),
+    ("umap_genus", lambda: make_umap_chart("genus")),
+    ("simpson", make_simpson_paradox_table),
+    ("global_map", make_global_map),
+    ("country_mob", make_country_mobility_chart),
+    ("country_inc", make_country_inc_chart),
+    ("temporal_anim", make_temporal_animation),
+    ("host_dist", make_host_distribution_chart),
+    ("host_mob", make_host_mobility_chart),
+    ("host_inc", make_host_inc_heatmap),
+    ("host_amr", make_host_amr_heatmap),
+    ("is_family", make_is_family_chart),
+    ("is_mob", make_is_mobility_chart),
+    ("is_inc", make_is_inc_heatmap),
+    ("integron_sec", _build_integron_section),
+    ("comob_sec", _build_comob_section),
+    ("retromob_sec", _build_retromob_section),
+    ("kpc_sec", _build_kpc_section),
+    ("integron_ml_sec", _build_integron_ml_section),
+]
+for _name, _fn in _cache_fns:
+    logger.info(f"  {_name}...")
+    _CACHE[_name] = _fn()
+
+# Override all heavy functions to return cached results
+make_feature_importance_chart = lambda: _CACHE["rf"]
+make_matched_comparison = lambda: _CACHE["matched"]
+make_rarefaction_chart = lambda: _CACHE["rarefaction"]
+make_temporal_trends_chart = lambda: _CACHE["amr_trends"]
+make_inc_trends_chart = lambda: _CACHE["inc_trends"]
+make_amr_cooccurrence_chart = lambda: _CACHE["amr_cooccur"]
+make_umap_chart = lambda c="mobility": _CACHE["umap_mob"] if c == "mobility" else _CACHE["umap_genus"]
+make_simpson_paradox_table = lambda: _CACHE["simpson"]
+make_global_map = lambda: _CACHE["global_map"]
+make_country_mobility_chart = lambda: _CACHE["country_mob"]
+make_country_inc_chart = lambda: _CACHE["country_inc"]
+make_temporal_animation = lambda: _CACHE["temporal_anim"]
+make_host_distribution_chart = lambda: _CACHE["host_dist"]
+make_host_mobility_chart = lambda: _CACHE["host_mob"]
+make_host_inc_heatmap = lambda: _CACHE["host_inc"]
+make_host_amr_heatmap = lambda: _CACHE["host_amr"]
+make_is_family_chart = lambda: _CACHE["is_family"]
+make_is_mobility_chart = lambda: _CACHE["is_mob"]
+make_is_inc_heatmap = lambda: _CACHE["is_inc"]
+_build_integron_section = lambda: _CACHE["integron_sec"]
+_build_comob_section = lambda: _CACHE["comob_sec"]
+_build_retromob_section = lambda: _CACHE["retromob_sec"]
+_build_kpc_section = lambda: _CACHE["kpc_sec"]
+_build_integron_ml_section = lambda: _CACHE["integron_ml_sec"]
+
+logger.info("All charts pre-computed! Tabs will load instantly.")
 
 # ---------------------------------------------------------------------------
 # Run
