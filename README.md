@@ -5,6 +5,7 @@
 
 Interactive dashboard for exploring **182,362 complete plasmids** from [PLSDB 2025](https://ccb-microbe.cs.uni-saarland.de/plsdb2025/) (72,556) + [NCBI Nucleotide](https://www.ncbi.nlm.nih.gov/nuccore/) (109,806 additional), powered by a local SQLite database. No API rate limits, instant startup.
 
+[Documentation](https://plasmidnet.readthedocs.io/en/latest/database.html)
 ## Features
 
 ### Overview
