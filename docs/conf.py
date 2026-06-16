@@ -1,6 +1,6 @@
 # Configuration file for Sphinx documentation builder.
 project = "PlasmidNet"
-copyright = "2026, Louise Cerdeira"
+copyright = "2026, PlasmidNET"
 author = "Louise Cerdeira"
 release = "1.0"
 
